@@ -632,6 +632,36 @@ def _():
     luk(ui)
 
 
+@proev("en tast, der holdes nede, sender ÉN besked — ikke tredive")
+def _():
+    # SET I DRIFT: holdes en svartast nede, gentager tastaturet den mange
+    # gange i sekundet. Familien fik en byge af ens beskeder, og for dem
+    # ligner det panik. Hun så kun, at boblerne blev ved med at komme.
+    ui, sendte = med_kvitteringsfanger()
+    besked(ui, 11, "Mor", "hej")
+    sendte.clear()
+
+    for _i in range(30):                 # tastaturets gentagelse
+        ui._send_reply("Tak")
+    ui.root.update()
+    svar = [x for x in sendte if "Tak" in x[1]]
+    assert len(svar) == 1, f"{len(svar)} beskeder sendt i stedet for én"
+
+    # Et ANDET svar er en ny beslutning og må ikke bremses
+    ui._send_reply("Ring til mig")
+    ui.root.update()
+    assert any("Ring til mig" in x[1] for x in sendte), \
+        "et andet svar blev også bremset — så kan hun ikke skifte mening"
+
+    # … og efter pausen må det samme svar sendes igen
+    ui._sidste_svar -= lv.SVAR_PAUSE_SEK + 1
+    ui._send_reply("Tak")
+    ui.root.update()
+    assert len([x for x in sendte if "Tak" in x[1]]) == 2, \
+        "svaret kunne ikke sendes igen efter pausen"
+    luk(ui)
+
+
 @proev("hjælpelinjen siger, hvad Enter gør lige nu")
 def _():
     ui = med_tre_personer(blink=False)
@@ -2739,6 +2769,30 @@ def _():
     # er der ingen vej ind i maskinen for den, der sidder foran den.
     assert "im-launch" not in t.split("for d in")[1].split("done")[0], \
         "im-launch står på listen over programmer, der slås fra"
+
+
+@proev("livline-wifi findes — og koden havner aldrig i historikken")
+def _():
+    # En WiFi-kode på kommandolinjen havner i ~/.bash_history og i
+    # maskinens proces-liste, og bliver liggende i årevis på en maskine i
+    # en fremmed stue. Det var nær sket én gang.
+    #
+    # Nettet skal desuden kunne lægges ind, MENS maskinen står hjemme hos
+    # den, der bygger den. Ellers skal koden tastes i familiens stue —
+    # og så laver man teknik foran dem, hvilket leveringsnoten forbyder.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    assert "/usr/local/bin/livline-wifi" in t, \
+        "livline-wifi lægges ikke på maskinen"
+    blok = t.split("livline-wifi: læg et netværk ind")[1].split("WIFIEOF")[1]
+    assert "read -rsp" in blok or "--ask" in blok, \
+        "koden tastes ikke skjult — den kan ende i historikken"
+    assert "nmcli --ask" in blok, \
+        "er nettet i nærheden, skal nmcli selv spørge — så rører koden aldrig argv"
+    assert "connection add type wifi" in blok, \
+        "et net uden for rækkevidde kan ikke lægges ind hjemmefra"
 
 
 @proev("install.sh lægger livline-vis på maskinen")

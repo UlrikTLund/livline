@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.69"
+INSTALL_VER="4.71"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -567,6 +567,82 @@ for d in /sys/class/backlight/*/; do
         fi
     done
 done
+
+echo "-- livline-wifi: læg et netværk ind uden at koden havner i historikken..."
+cat > /usr/local/bin/livline-wifi <<'WIFIEOF'
+#!/usr/bin/env bash
+# Lægger et WiFi ind på maskinen — eller viser dem, der allerede er.
+#
+# KODEN TASTES. DEN SKRIVES ALDRIG SOM ARGUMENT.
+# En kode på kommandolinjen havner i ~/.bash_history og i maskinens
+# proces-liste, og den ville blive liggende i årevis på en maskine i en
+# fremmed stue. Det var nær sket én gang; derfor findes denne fil.
+#
+# Nettet behøver IKKE være i nærheden. Familiens WiFi kan lægges ind,
+# mens maskinen står på dit eget bord — og det er sådan, det skal gøres:
+# der laves ikke teknik i stuen.
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then echo "Kør med sudo."; exit 1; fi
+
+if [[ $# -eq 0 ]]; then
+    echo "Gemte net (maskinen vælger selv det, der er i nærheden):"
+    nmcli -g NAME,TYPE connection show 2>/dev/null \
+        | awk -F: '$2=="802-11-wireless"{print "   " $1}'
+    echo
+    echo "Net i nærheden lige nu:"
+    nmcli -t -f SSID,SIGNAL device wifi list 2>/dev/null \
+        | awk -F: 'NF && $1 != "" {print "   " $1 "  (" $2 "%)"}' | sort -u
+    echo
+    echo "Læg et nyt ind:   sudo livline-wifi \"Netværkets navn\""
+    echo "Fjern et igen:    sudo livline-wifi --glem \"Netværkets navn\""
+    exit 0
+fi
+
+if [[ "$1" == "--glem" ]]; then
+    [[ $# -ge 2 ]] || { echo "Brug: sudo livline-wifi --glem \"navn\""; exit 1; }
+    nmcli connection delete "$2" && echo "Fjernet: $2"
+    exit 0
+fi
+
+SSID="$1"
+
+# ER NETTET I NÆRHEDEN? Så lader vi nmcli spørge om koden selv. Den vej
+# rører koden aldrig kommandolinjen — heller ikke et kort øjeblik.
+if nmcli -t -f SSID device wifi list 2>/dev/null | grep -qxF "$SSID"; then
+    echo "-- \"$SSID\" er i nærheden. Tast koden, når der bliver spurgt."
+    nmcli --ask device wifi connect "$SSID"
+    echo
+    echo "Forbundet og gemt: $SSID"
+    exit 0
+fi
+
+echo "-- \"$SSID\" er ikke i nærheden. Lægges ind til senere brug."
+read -rsp "Kode til \"$SSID\" (tom = åbent net): " KODE; echo
+
+if nmcli -g NAME connection show 2>/dev/null | grep -qxF "$SSID"; then
+    echo "   findes i forvejen — opdaterer koden"
+    if [[ -n "$KODE" ]]; then
+        nmcli connection modify "$SSID" \
+            wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$KODE"
+    else
+        nmcli connection modify "$SSID" wifi-sec.key-mgmt none
+    fi
+elif [[ -n "$KODE" ]]; then
+    nmcli connection add type wifi con-name "$SSID" ssid "$SSID" \
+        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$KODE"
+else
+    nmcli connection add type wifi con-name "$SSID" ssid "$SSID"
+fi
+KODE=""
+
+nmcli connection modify "$SSID" connection.autoconnect yes
+echo
+echo "Lagt ind: $SSID"
+echo "Maskinen kobler sig selv på, næste gang nettet er i nærheden."
+WIFIEOF
+chmod 755 /usr/local/bin/livline-wifi
+echo "   livline-wifi lagt på maskinen ✔"
 
 echo "-- livline-vis: skift mellem de tre opsætninger..."
 # Bruges ved levering: prøv alle tre med den ældre siddende foran, og vælg

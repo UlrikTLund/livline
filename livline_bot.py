@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.69
+VERSION 4.71
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -150,7 +150,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.69"
+VERSION = "4.71"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -222,6 +222,15 @@ AFSPIL_MAKS = 600         # sekunder en video højst må have skærmen. Uden lof
                           # skærmen, og maskinen ville se død ud
 SEND_SVAR_FORSOEG = 60    # halve sekunder der ventes på svar fra Telegram,
                           # før en afsendelse regnes for mislykket (30 sek.)
+SVAR_PAUSE_SEK = 3.0      # mindste tid mellem to ENS svar.
+                          # SET I DRIFT: holdes en tast nede, gentager
+                          # tastaturet den tredive gange i sekundet — og
+                          # familien fik tredive beskeder. En finger, der
+                          # bliver liggende, en rystende hånd, en tast under
+                          # en avis. Et ANDET svar går stadig igennem med
+                          # det samme: trykker hun "Tak" og straks efter
+                          # "Ring til mig", er det en beslutning, ikke et
+                          # uheld — og den beslutning må aldrig bremses.
 # ÉN REGEL FOR, HVORNÅR SKÆRMEN MÅ SKIFTE SAMTALE:
 # der skal være kvitteret for det, der står nu.
 #
@@ -1359,6 +1368,10 @@ class LivlineUI:
         self._svarkoe: "queue.Queue[tuple]" = queue.Queue()
         self.bot = BotWorker(config, self.whitelist, self.inbox)
         self.last_sender: int | None = None
+        # Værn mod en tast, der holdes nede — se SVAR_PAUSE_SEK
+        self._sidste_svar: float = 0.0
+        self._sidste_svar_tekst: str = ""
+        self._svar_spaerret: bool = False
         self.selected: int | None = None      # valgt modtager (enkelte-mode)
         self._rows: list[dict] = []           # hele historikken i hukommelsen
         self._venter: set[int] = set()        # ulæste samtaler
@@ -2970,6 +2983,28 @@ class LivlineUI:
         self._send_reply(txt)
 
     def _send_reply(self, reply_text: str) -> None:
+        # ÉN FINGER, ÉN BESKED.
+        #
+        # Set i drift: holdes en svartast nede, gentager tastaturet den
+        # mange gange i sekundet, og familien får en byge af ens beskeder.
+        # For dem ligner det panik. For hende skete der ingenting synligt
+        # ud over, at boblerne blev ved med at komme.
+        #
+        # Kun det SAMME svar bremses, og kun i få sekunder. Et andet svar
+        # går igennem med det samme — det er en ny beslutning, og den må
+        # aldrig vente.
+        nu_m = time.monotonic()
+        if (reply_text == self._sidste_svar_tekst
+                and nu_m - self._sidste_svar < SVAR_PAUSE_SEK):
+            if not self._svar_spaerret:
+                self._svar_spaerret = True
+                log.info("Samme svar gentaget inden for %.0f sek. — ignoreret "
+                         "(tast holdt nede?)", SVAR_PAUSE_SEK)
+            return
+        self._svar_spaerret = False
+        self._sidste_svar = nu_m
+        self._sidste_svar_tekst = reply_text
+
         self._ryd_tom_linje()
         rec = self._recipients()
         if not rec:
