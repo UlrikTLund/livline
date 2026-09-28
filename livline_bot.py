@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.74
+VERSION 4.75
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -52,8 +52,9 @@ stavefejl i config) sendes straks og tæller ikke med i den ene.
 (med chat_id klar til /tilfoej).
 
 Afhængigheder (Ubuntu) — install.sh klarer det hele:
-    sudo apt install python3-tk python3-pil python3-pil.imagetk mpv \
-                     ffmpeg alsa-utils python3-venv openssl
+    sudo apt install python3-tk python3-pil python3-pil.imagetk \
+                     python3-venv openssl
+    Ingen afspiller og ingen lydpakker: Livline er skærm og tastatur.
     /opt/livline/venv/bin/pip install "python-telegram-bot>=22,<23"
     Biblioteket ligger i appens EGET miljø, ikke i systemets Python.
     Brug ALDRIG --break-system-packages: det bryder Ubuntus beskyttelse
@@ -150,7 +151,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.74"
+VERSION = "4.75"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -1114,9 +1115,33 @@ class BotWorker:
             path = await self._download(msg.photo[-1].file_id, context, ".jpg")
             self._modtag(Incoming(name, chat_id, "photo",
                                   text=msg.caption or "", file_path=path))
-        elif msg.voice:
-            path = await self._download(msg.voice.file_id, context, ".oga")
-            self._modtag(Incoming(name, chat_id, "voice", file_path=path))
+        elif msg.voice or msg.audio:
+            # TALEBESKEDER AFSPILLES IKKE LÆNGERE. Samme begrundelse som
+            # video, og truffet samme dag.
+            #
+            # En talebesked starter af sig selv, kan ikke standses med de
+            # otte taster, og lyder forskelligt alt efter, hvornår på
+            # døgnet den kommer — kl. 2 om natten fyldte den hele
+            # lejligheden. Dertil: i den aldersgruppe bruges høreapparater,
+            # og en højttaler i en stue er den dårligste måde at høre en
+            # besked på. Telefonen gør det bedre.
+            #
+            # LIVLINE ER SKÆRM OG TASTATUR. Lyd er telefonens arbejde.
+            hvad = "talebesked" if msg.voice else "musikfil"
+            self._modtag(Incoming(name, chat_id, "text",
+                                  text=f"({name} sendte en {hvad})"))
+            try:
+                await msg.reply_text(
+                    f"🎙 {hvad.capitalize()}en kan desværre ikke afspilles "
+                    f"her på Livline-skærmen.\n"
+                    f"Jeg har sendt den videre til de andre i familien.\n"
+                    f"Skriv gerne et par ord i stedet.")
+            except Exception as e:
+                log.warning("Kunne ikke svare om talebesked til %s: %s",
+                            chat_id, e)
+            if self.config.mode == "faellestraad":
+                await self._rebroadcast(msg, name, exclude=chat_id)
+            return
         elif msg.video or msg.video_note:
             # VIDEO VISES IKKE LÆNGERE PÅ SKÆRMEN.
             #
@@ -1137,8 +1162,9 @@ class BotWorker:
                                   text=f"({name} sendte en video)"))
             try:
                 await msg.reply_text(
-                    "🎬 Videoen er sendt videre til de andre i familien — "
-                    "men Livline-skærmen kan ikke vise video.\n"
+                    "🎬 Videoen kan desværre ikke vises her på "
+                    "Livline-skærmen.\n"
+                    "Jeg har sendt den videre til de andre i familien.\n"
                     "Skriv gerne et par ord om, hvad den viser.")
             except Exception as e:
                 log.warning("Kunne ikke svare om video til %s: %s", chat_id, e)
@@ -1420,9 +1446,8 @@ class LivlineUI:
         self._rows: list[dict] = []           # hele historikken i hukommelsen
         self._venter: set[int] = set()        # ulæste samtaler
         self._ukvitteret: set[int] = set()    # afsendere, der venter på kvittering
-        # Talebeskeder afspilles én ad gangen. Video vises ikke længere,
-        # så ingen afspiller kan tage skærmen fra samtalen.
-        self._lyd: subprocess.Popen | None = None
+        # Ingen afspiller af nogen art. Video og talebeskeder vises ikke,
+        # og maskinen laver aldrig lyd — se _on_message og _show.
         self._historik_fejl: str | None = None  # sat, hvis historikken ikke kunne læses
         self._visfejl_meldt = False         # én melding pr. opstart, se _poll_inbox
         self._img_refs: list = []  # Tkinter kræver at billedreferencer holdes i live
@@ -2688,7 +2713,6 @@ class LivlineUI:
         # F-tasten, når hun er klar.
         self._venter.add(m.chat_id)
         self._refresh_topbar()
-        self.root.bell()
         self._flash()
 
     def _tegn_samtale(self) -> None:
@@ -2776,7 +2800,6 @@ class LivlineUI:
                                if self.config.mode == "enkelte" else None))
             self._rul_til_bund()
             if not replay:
-                self.root.bell()
                 self._flash()
             return
 
@@ -2793,18 +2816,23 @@ class LivlineUI:
             if m.text:
                 self._insert(m.text + "\n")
         elif m.kind == "voice":
-            # "video" står stadig i historikken fra ældre versioner og
-            # behandles nu som almindelig tekst. Kun lyd afspilles.
-            if replay:
-                self._insert("🔊  Talebesked (modtaget)\n")
-            else:
-                self._insert("🔊  Ny talebesked — afspilles…\n")
-                self._play(m.file_path)
+            # "voice" og "video" står stadig i historikken fra ældre
+            # versioner. Ingen af delene afspilles længere — linjen bliver
+            # stående, så en gammel samtale ikke får huller i sig.
+            self._insert("🎙  Talebesked (kan ikke afspilles her)\n")
 
         self._rul_til_bund()
         if replay:
             return
-        self.root.bell()   # diskret lydsignal ved ny besked
+        # HER LÅ ET BIP. Det er slået fra sammen med talebeskederne.
+        #
+        # Maskinen bippede døgnet rundt — også kl. 2, når barnebarnet
+        # skrev. Skærmen er sort om natten, men lyden var det ikke.
+        # Og der er ingen at skrue ned for den: han har otte taster.
+        #
+        # MASKINEN LAVER ALDRIG LYD. At der er en ny besked, siges med
+        # det røde ■ i hovedet og et kort blink i kanten — begge dele
+        # synlige på afstand, ingen af dem i stand til at vække nogen.
         self._flash()      # visuelt signal: kanten blinker kort
 
     def _flash(self, times: int = 4) -> None:
@@ -2824,42 +2852,6 @@ class LivlineUI:
             return
         maal(self._accent if times % 2 == 0 else self._bg)
         self.root.after(320, lambda: self._flash(times - 1))
-
-    def _play(self, path: Path) -> None:
-        """Afspiller en talebesked. KUN lyd — video vises ikke længere.
-
-        Video blev fjernet, fordi afspilleren tog både skærmen og
-        tastaturet: mpv binder selv q til "luk" og pilene til at spole.
-        De otte taster på tastaturdækket betød dermed noget andet, så
-        længe en video kørte. En tast, der skifter betydning, er værre
-        end en funktion, der mangler.
-
-        Lyd åbner intet vindue og kaprer ingen taster. Derfor er den
-        blevet — og for en, hvis læsning bliver dårligere, er datterens
-        stemme den sidste kanal, der lukker.
-
-        ÉN AD GANGEN. To talebeskeder, der kom få sekunder efter
-        hinanden, startede før hver sin afspiller og talte oven i
-        hinanden. Ingen af dem kunne forstås, og han kunne ikke stoppe
-        nogen af dem."""
-        if self._lyd is not None and self._lyd.poll() is None:
-            log.info("Talebesked sprunget over — der afspilles allerede en")
-            self._append_system("🔊  Endnu en talebesked — afspilles ikke, "
-                                "mens den forrige kører")
-            return
-        try:
-            self._lyd = subprocess.Popen(
-                ["mpv", "--really-quiet", "--no-video",
-                 # Ingen taster til afspilleren. Den har intet vindue, men
-                 # vi siger det eksplicit, så en senere mpv-udgave ikke
-                 # begynder at lytte med.
-                 "--no-input-default-bindings", "--input-conf=/dev/null",
-                 str(path)])
-        except FileNotFoundError:
-            self._append_system("Kunne ikke afspille — mpv mangler på maskinen.")
-        except Exception as e:
-            log.warning("Kunne ikke afspille talebesked: %s", e)
-            self._append_system("Kunne ikke afspille talebeskeden.")
 
     def _boble(self, tekst: str, tid: str, afsender: str | None,
                egen: bool = False, farve: str | None = None):

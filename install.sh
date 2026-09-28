@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.74"
+INSTALL_VER="4.75"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -84,10 +84,14 @@ echo "-- Installerer pakker..."
 # maskinen allerede har; mangler der reelt en pakke, råber install nedenfor.
 apt-get update -q || echo "   ADVARSEL: pakkelisterne kunne ikke hentes fuldt ud"
 apt-get install -y -q python3 python3-pip python3-venv python3-tk python3-pil \
-    python3-pil.imagetk mpv ffmpeg \
+    python3-pil.imagetk \
     xvfb smartmontools fonts-noto-color-emoji cron openssl
-#   ffmpeg          → beholdt: mpv bruger dens biblioteker til lyd
-#                     (alsa-utils er væk sammen med talebesked-optagelsen)
+#   INGEN AFSPILLER OG INGEN LYDPAKKER. mpv, ffmpeg og alsa-utils er væk.
+#                     Livline er skærm og tastatur: video vises ikke,
+#                     talebeskeder afspilles ikke, og maskinen bipper ikke.
+#                     Lyd er telefonens arbejde — og i den aldersgruppe
+#                     høres en besked bedre i et høreapparat end i en
+#                     højttaler i en stue.
 #   xvfb            → /opdater prøvekører en ny version, før den installeres
 #   smartmontools   → diskens SMART-status med i heartbeat
 #   noto-color-emoji→ giver emoji en chance for at vises (test på skærmen!)
@@ -795,7 +799,7 @@ chmod 755 /usr/local/bin/livline-rapport
     && echo "   livline-rapport svarer ✔" \
     || echo "   ADVARSEL: livline-rapport kunne ikke køre"
 
-echo "-- Medie-oprydning: familiens billeder og talebeskeder slettes efter 30 dage..."
+echo "-- Medie-oprydning: familiens billeder slettes efter 30 dage..."
 # (Beskedhistorikken i historik.json holder sig selv på 100 poster.)
 echo "30 20 * * * root find /var/lib/livline/media -type f -mtime +30 -delete" \
     > /etc/cron.d/livline-media

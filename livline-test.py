@@ -1460,37 +1460,59 @@ def _():
     assert "_download" not in gren, \
         "videoen hentes stadig ned — filen fylder, og der er intet at bruge den til"
     assert "reply_text" in gren, "afsenderen får ikke at vide, at video ikke vises"
-    assert "kan ikke vise video" in gren, \
+    assert "ikke vises her" in gren, \
         "svaret siger ikke, at det er SKÆRMEN der ikke kan — ikke ham"
     assert "_rebroadcast" in gren, \
         "de øvrige i tråden får ikke videoen på deres telefoner"
-    # Og intet sted må starte en afspiller med billede
-    assert "--fs" not in kilde, "der startes stadig en fuldskærmsafspiller"
-    assert "--no-video" in kilde, "lyd afspilles ikke længere uden billede"
 
 
-@proev("to talebeskeder spiller ikke oven i hinanden")
+@proev("talebeskeder afspilles ikke — og afsenderen får det at vide")
 def _():
-    # To pårørende sender talebeskeder få sekunder efter hinanden. Før
-    # startede begge hver sin afspiller og talte oven i hinanden — ingen
-    # af dem kunne forstås, og han kunne ikke stoppe nogen af dem.
-    class Koerende:
-        def poll(self): return None
+    # SAMME BESLUTNING SOM VIDEO, truffet samme dag. En talebesked
+    # starter af sig selv, kan ikke standses med de otte taster, og kl. 2
+    # om natten fylder den hele lejligheden. Dertil bruges høreapparater
+    # i den aldersgruppe — telefonen gør arbejdet bedre end en højttaler
+    # i en stue. Men den må ikke bare forsvinde: afsenderen skal have
+    # svar, og de øvrige skal have den ægte besked på telefonen.
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    gren = kilde.split("elif msg.voice or msg.audio:")[1].split(
+        "elif msg.video")[0]
+    assert "_download" not in gren, \
+        "talebeskeden hentes stadig ned — der er intet at bruge filen til"
+    assert "reply_text" in gren, \
+        "afsenderen får ikke at vide, at talebeskeden ikke afspilles"
+    assert "ikke afspilles" in gren and "her på Livline" in gren, \
+        "svaret siger ikke, at det er SKÆRMEN der ikke kan"
+    assert "_rebroadcast" in gren, \
+        "de øvrige i tråden får ikke talebeskeden på deres telefoner"
 
-    ui = byg()
+
+@proev("maskinen laver ALDRIG lyd")
+def _():
+    # Bippet var det sidste, der kunne vække nogen. Skærmen blev sort
+    # kl. 22, men lyden gjorde ikke: skrev barnebarnet kl. 01.30, bippede
+    # maskinen i stuen. Der er ingen at skrue ned for den — han har otte
+    # taster, og ingen af dem er lydstyrke.
+    #
+    # At der er en ny besked, siges nu kun med øjnene: det røde ■ i
+    # hovedet og et kort blink i kanten. Begge dele synlige på afstand,
+    # ingen af dem i stand til at vække nogen.
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    kode = "\n".join(l for l in kilde.splitlines()
+                     if not l.lstrip().startswith("#"))
+    for forbudt in ("bell(", "mpv", "Popen([\"mpv", "aplay", "paplay",
+                    "playsound", "winsound"):
+        assert forbudt not in kode, \
+            f"maskinen kan stadig lave lyd: {forbudt!r} står i koden"
+    # … og den skal stadig sige til med øjnene
+    ui = byg(mode="faellestraad")
     try:
-        ui._lyd = Koerende()
-        startet = []
-        rigtig = subprocess.Popen
-        subprocess.Popen = lambda *a, **kw: startet.append(a) or rigtig(
-            ["true"], **{k: v for k, v in kw.items() if k != "shell"})
-        try:
-            ui._play(pathlib.Path("/tmp/findes-ikke.ogg"))
-        finally:
-            subprocess.Popen = rigtig
-        assert startet == [], "der blev startet en afspiller nummer to"
-        assert "talebesked" in paa_skaermen(ui).lower(), \
-            "brugeren fik ikke at vide, hvorfor den anden ikke blev afspillet"
+        besked(ui, 11, "Mor", "er du vågen?")
+        ui.root.update()
+        assert "er du vågen" in paa_skaermen(ui), "beskeden kom slet ikke frem"
+        hoved = ui._top_tekst.cget("text")
+        assert "■" in hoved, \
+            f"ingen lyd OG intet rødt mærke — så siger maskinen intet: {hoved!r}"
     finally:
         luk(ui)
 
