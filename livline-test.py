@@ -685,7 +685,14 @@ def _():
     # stoppede for altid. Vinduet stod og så levende ud, tasterne virkede,
     # rulningen virkede. Ingen besked kom nogensinde igennem igen, og
     # processen døde ikke, så genstartsvagten opdagede intet.
-    ui = med_tre_personer(blink=False)
+    #
+    # Prøven kører i FÆLLESTRÅD, fordi det er den tilstand, maskinerne
+    # leveres i. I "enkelte" viskes advarselslinjen af skærmen, næste gang
+    # en samtale tegnes om — derfor er meldingen til administrator det,
+    # der altid holder. Han er også den eneste, der kan gøre noget.
+    ui = byg(mode="faellestraad", blink=False)
+    sendte = []
+    ui.bot.send_text = lambda ids, tekst, svar=None: sendte.append((tuple(ids), tekst))
     try:
         rigtig = ui._modtag_til_skaerm
         kaldt = []
@@ -708,7 +715,20 @@ def _():
         assert "kommer du i morgen" in paa_skaermen(ui), \
             "beskeden efter den defekte nåede aldrig skærmen"
         assert "kunne ikke vises" in paa_skaermen(ui).lower(), \
-            "den defekte besked forsvandt uden et ord"
+            "den defekte besked forsvandt uden et ord på skærmen"
+        assert any("kunne ikke" in t.lower() and "VISE" in t for _i, t in sendte), \
+            f"administrator fik intet at vide om visningsfejlen: {sendte}"
+        # … men kun ÉN gang, selv om alle beskeder fejler
+        antal_foer = len(sendte)
+        kaldt.clear()
+        ui._modtag_til_skaerm = lambda m: (_ for _ in ()).throw(
+            RuntimeError("stadig defekt"))
+        for _i in range(5):
+            ui.inbox.put(lv.Incoming("Mor", 11, "text", text="igen"))
+        ui._poll_inbox()
+        ui.root.update()
+        assert len(sendte) == antal_foer, \
+            "administrator fik en melding pr. besked — det er en byge, ikke en advarsel"
         # Og løkken skal have bestilt sit næste gennemløb
         assert ui.root.tk.call("after", "info"), \
             "der er ikke bestilt et nyt gennemløb — maskinen er døv"

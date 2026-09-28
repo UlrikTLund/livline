@@ -1424,6 +1424,7 @@ class LivlineUI:
         # så ingen afspiller kan tage skærmen fra samtalen.
         self._lyd: subprocess.Popen | None = None
         self._historik_fejl: str | None = None  # sat, hvis historikken ikke kunne læses
+        self._visfejl_meldt = False         # én melding pr. opstart, se _poll_inbox
         self._img_refs: list = []  # Tkinter kræver at billedreferencer holdes i live
 
         # Ukendt tema faldt før stille tilbage til "varm". Det er samme
@@ -2579,13 +2580,38 @@ class LivlineUI:
                     # nævnes på skærmen, ikke forsvinde.
                     log.warning("Kunne ikke vise besked fra %s: %s",
                                 getattr(m, "sender_name", "?"), e)
+                    navn = getattr(m, "sender_name", "familien")
                     try:
                         self._append_system(
-                            f"⚠️ En besked fra "
-                            f"{getattr(m, 'sender_name', 'familien')} "
-                            f"kunne ikke vises")
+                            f"⚠️ En besked fra {navn} kunne ikke vises")
                     except Exception:
                         pass
+                    # LINJEN PÅ SKÆRMEN ER IKKE NOK.
+                    #
+                    # Den, der sidder foran skærmen, kan ikke gøre noget
+                    # ved en besked, der ikke kunne tegnes — og i
+                    # "enkelte"-tilstand bliver linjen tilmed visket ud,
+                    # næste gang samtalen tegnes om. Den, der KAN gøre
+                    # noget, er administrator, og han sidder et andet sted.
+                    #
+                    # Kun ÉN melding pr. opstart: er et bibliotek gået i
+                    # stykker, fejler hver eneste besked, og tredive
+                    # ens beskeder hjælper ingen.
+                    if not self._visfejl_meldt:
+                        self._visfejl_meldt = True
+                        try:
+                            self.bot.send_admin(
+                                f"⚠️ {self.config.machine_name} kunne ikke "
+                                f"VISE en besked fra {navn} på skærmen.\n"
+                                f"Grund: {e}\n\n"
+                                f"Beskeden er gemt i historikken, og "
+                                f"maskinen kører videre — men den stod "
+                                f"aldrig på skærmen, og han har ikke set "
+                                f"den. Kig i loggen: journalctl -t livline\n\n"
+                                f"Meldes kun én gang pr. opstart.")
+                        except Exception as e2:
+                            log.warning("Kunne ikke melde visningsfejl "
+                                        "til admin: %s", e2)
             # Resultatet af egne afsendelser kommer fra en anden tråd og
             # behandles HER, hvor vi er i hovedtråden og må røre Tkinter.
             try:
