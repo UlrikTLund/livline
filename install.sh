@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.77"
+INSTALL_VER="4.79"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -58,6 +58,48 @@ MODE=${MODE:-faellestraad}
     echo "FEJL: tilstand skal være faellestraad eller enkelte."; exit 1; }
 read -rp "Update-URL til /opdater (enter = slået fra): " UPDATE_URL
 UPDATE_URL=${UPDATE_URL:-}
+
+# SIGNERING SKAL VÆRE OBLIGATORISK, NÅR /opdater ER TÆNDT.
+#
+# Appen kontrollerer kun underskriften, hvis /etc/livline/opdater.pub
+# findes — og installationen lagde den aldrig på. En ny maskine med en
+# update-URL tog derfor imod hvad som helst fra den adresse og kørte det.
+# Det er fail-OPEN, og det er den forkerte vej: en overtaget GitHub-konto
+# eller en ændret adresse var nok til at få egen kode ind i en stue.
+#
+# Nu er det fail-CLOSED. Er der en update-URL, skal der være en nøgle,
+# ellers slås /opdater fra. Syntakstjek og prøvekørsel viser, at kode KAN
+# køre — de siger intet om, hvem der har sendt den.
+#
+# Nøglen skal komme et andet sted fra end koden. Ligger de begge i det
+# samme repo, beskytter underskriften mod ingenting. Derfor en fil, du
+# har med — typisk fra USB-nøglen, hvor sikkerhedskopien også ligger.
+NOEGLEFIL=""
+if [[ -n "$UPDATE_URL" ]]; then
+    echo
+    echo "/opdater kræver den OFFENTLIGE nøgle (opdater.pub), så maskinen kan"
+    echo "kontrollere, at en ny version er underskrevet af dig. Den ligger"
+    echo "typisk på din USB-nøgle. Uden den slås /opdater fra."
+    read -rp "  Sti til opdater.pub (enter = slå /opdater fra): " NOEGLEFIL
+    if [[ -z "$NOEGLEFIL" ]]; then
+        echo "  /opdater SLÅS FRA — ingen nøgle angivet."
+        echo "  Maskinen opdateres i stedet i hånden over Tailscale."
+        UPDATE_URL=""
+    elif [[ ! -f "$NOEGLEFIL" ]]; then
+        echo "  FEJL: '$NOEGLEFIL' findes ikke. /opdater slås fra."
+        UPDATE_URL=""; NOEGLEFIL=""
+    elif ! openssl pkey -pubin -in "$NOEGLEFIL" -noout 2>/dev/null; then
+        # En fil, der ikke ER en offentlig nøgle, ville give en maskine,
+        # der afviser ALLE opdateringer — og fejlen ville først vise sig
+        # den dag, du havde travlt med at rette noget.
+        echo "  FEJL: '$NOEGLEFIL' er ikke en gyldig offentlig nøgle."
+        echo "  (Kontrollér med: openssl pkey -pubin -in FIL -noout)"
+        echo "  /opdater slås fra."
+        UPDATE_URL=""; NOEGLEFIL=""
+    else
+        echo "  nøglen ser rigtig ud ✔"
+    fi
+fi
 
 # NØDNETTET. Det net, maskinen kan finde, når familiens eget er væk, og du
 # står i stuen med telefonen som hotspot. Uden det skal der kabel eller
@@ -185,6 +227,25 @@ install -m 755 "$HERE/livline_bot.py" /opt/livline/livline_bot.py
 # kiosk-brugeren skal kunne udskifte programmet ved /opdater
 chown -R "$KIOSK_USER":"$KIOSK_USER" /opt/livline
 
+# ROOT KØRER ALDRIG NOGET FRA EN MAPPE, KIOSK-BRUGEREN KAN SKRIVE I.
+#
+# /opt/livline ejes af kiosk-brugeren — det SKAL den, for /opdater
+# udskifter livline_bot.py og lægger en .bak ved siden af. Men mappen lå
+# før også med de to scripts, root kører fra cron: netcheck.sh hvert
+# kvarter og hardware.py hver nat.
+#
+# Filerne selv var root-ejede, men MAPPEN var ikke. Og den, der må skrive
+# i en mappe, må også omdøbe og erstatte filerne i den. Kunne nogen køre
+# kode som Livline-brugeren — gennem et billede, der vælter Pillow, eller
+# en Python-pakke, der bliver overtaget — kunne de lægge deres egen
+# netcheck.sh og have root et kvarter senere.
+#
+# Derfor bor de to nu her, hvor kun root må skrive:
+install -d -o root -g root -m 755 /usr/local/libexec/livline
+# Ryd op efter tidligere installationer, så de gamle ikke bliver liggende
+# og forvirre den, der leder efter dem.
+rm -f /opt/livline/netcheck.sh /opt/livline/hardware.py
+
 echo "-- Syntakstjek..."
 "$VENV/bin/python" -m py_compile /opt/livline/livline_bot.py || {
     echo "FEJL: livline_bot.py har en syntaksfejl — installation afbrudt."; exit 1; }
@@ -215,6 +276,19 @@ python3 -c 'import json,sys; json.load(open("/etc/livline/config.json"))' || {
 # Config-filen bruges kun til afvigelser hos den enkelte bruger.
 chown root:"$KIOSK_USER" /etc/livline/config.json
 chmod 640 /etc/livline/config.json
+
+# Den offentlige nøgle: root-ejet, læsbar for alle. Den er ikke hemmelig
+# — den kan kun KONTROLLERE en underskrift, ikke lave en. Men den må kun
+# kunne ændres af root: kunne kiosk-brugeren skrive i den, kunne han
+# udskifte den med sin egen og dermed godkende sin egen kode.
+if [[ -n "$NOEGLEFIL" ]]; then
+    install -o root -g root -m 644 "$NOEGLEFIL" /etc/livline/opdater.pub
+    echo "   opdater.pub lagt på maskinen — /opdater kræver underskrift ✔"
+elif [[ -f /etc/livline/opdater.pub ]]; then
+    echo "   opdater.pub lå der i forvejen — beholdt"
+else
+    echo "   ingen opdater.pub — /opdater er slået fra på denne maskine"
+fi
 
 # Tom whitelist ved førstegangsinstallation (familien tilføjes med /tilfoej)
 if [[ ! -f /var/lib/livline/whitelist.json ]]; then
@@ -390,14 +464,45 @@ if [[ -f /etc/gdm3/custom.conf ]]; then
     fi
     NUVAERENDE=$(grep -oP '^AutomaticLogin=\K.*' /etc/gdm3/custom.conf || true)
     if [[ "$NUVAERENDE" != "$KIOSK_USER" ]]; then
-        echo "   ADVARSEL: GDM logger automatisk ind som '$NUVAERENDE',"
-        echo "   men appen er sat op til '$KIOSK_USER'. Skærmen vil stå tom."
-        echo "   Ret AutomaticLogin i /etc/gdm3/custom.conf, eller kør igen."
+        # HER STOD FØR EN ADVARSEL, OG SÅ KØRTE SCRIPTET VIDERE TIL "Færdig".
+        #
+        # Pegede GDM på en anden bruger, ville skærmen stå tom efter
+        # genstarten — og sluttteksten sagde alligevel, at maskinen logger
+        # selv ind og starter Livline. En tilstand, der GARANTERET
+        # forhindrer opstart, må ikke være en advarsel, man kan overse
+        # klokken elleve om aftenen.
+        #
+        # Nu rettes den. Med en kopi af filen først, så den kan lægges
+        # tilbage, hvis noget går galt.
+        echo "   GDM logger ind som '$NUVAERENDE' — retter til '$KIOSK_USER'"
+        cp -a /etc/gdm3/custom.conf "/etc/gdm3/custom.conf.livline-$(date +%Y%m%d%H%M%S)"
+        sed -i "s/^AutomaticLogin=.*/AutomaticLogin=$KIOSK_USER/" \
+            /etc/gdm3/custom.conf
+        sed -i "s/^AutomaticLoginEnable=.*/AutomaticLoginEnable=true/" \
+            /etc/gdm3/custom.conf
+        grep -q "^AutomaticLoginEnable=" /etc/gdm3/custom.conf || \
+            sed -i "s/^\[daemon\]/[daemon]\nAutomaticLoginEnable=true/" \
+                /etc/gdm3/custom.conf
+        EFTER=$(grep -oP '^AutomaticLogin=\K.*' /etc/gdm3/custom.conf || true)
+        if [[ "$EFTER" != "$KIOSK_USER" ]]; then
+            echo "FEJL: autologin kunne ikke sættes til '$KIOSK_USER'."
+            echo "Maskinen ville stå med en tom skærm efter genstart, og det"
+            echo "kan ikke rettes over Tailscale. Ret /etc/gdm3/custom.conf"
+            echo "i hånden, og kør installationen igen."
+            exit 1
+        fi
+        echo "   autologin rettet til $KIOSK_USER ✔"
     else
         echo "   autologin som $KIOSK_USER ✔"
     fi
 else
-    echo "   ADVARSEL: /etc/gdm3/custom.conf findes ikke — autologin er IKKE sat op."
+    # Uden GDM-konfiguration kommer skærmen aldrig forbi login-billedet.
+    # Det er ikke en advarsel værd — det er en installation, der ikke kan
+    # lykkes, og den skal stoppe, mens du står ved maskinen.
+    echo "FEJL: /etc/gdm3/custom.conf findes ikke — autologin kan ikke sættes op."
+    echo "Uden autologin står skærmen på login-billedet efter genstart, og"
+    echo "Livline starter aldrig. Er GDM installeret? (Ubuntu Desktop, ikke Server)"
+    exit 1
 fi
 
 echo "-- Låg-lukning: maskinen kører videre (aldrig offline)..."
@@ -439,7 +544,7 @@ wifi.powersave = 2
 EOF
 
 echo "-- Netværks-vagthund (genstarter WiFi ved vedvarende udfald)..."
-cat > /opt/livline/netcheck.sh <<'EOF'
+cat > /usr/local/libexec/livline/netcheck.sh <<'EOF'
 #!/usr/bin/env bash
 # Kører hvert 15. min via /etc/cron.d/livline-net.
 # Genstarter NetworkManager, hvis internettet er væk ved to tjek i træk
@@ -454,8 +559,10 @@ else
     touch "$STATE"
 fi
 EOF
-chmod 755 /opt/livline/netcheck.sh
-echo "*/15 * * * * root /opt/livline/netcheck.sh" > /etc/cron.d/livline-net
+chown root:root /usr/local/libexec/livline/netcheck.sh
+chmod 755 /usr/local/libexec/livline/netcheck.sh
+echo "*/15 * * * * root /usr/local/libexec/livline/netcheck.sh" \
+    > /etc/cron.d/livline-net
 
 echo "-- Natterytme: maskinen slukker IKKE, den genstarter..."
 # MASKINEN SLUKKER IKKE LÆNGERE.
@@ -480,7 +587,7 @@ EOF
 chmod 644 /etc/cron.d/livline-genstart
 
 echo "-- Dagligt hardware-tjek (batteri + disk) til heartbeat..."
-cat > /opt/livline/hardware.py <<'EOF'
+cat > /usr/local/libexec/livline/hardware.py <<'EOF'
 #!/usr/bin/env python3
 """Skriver batteriets restkapacitet og diskens SMART-status til en fil,
 som appen læser og sender med i /status og heartbeat. Kører som root via
@@ -544,10 +651,11 @@ for disk in diske:
 sti = pathlib.Path("/var/lib/livline/hardware.json")
 sti.write_text(json.dumps(ud), encoding="utf-8")
 EOF
-chmod 755 /opt/livline/hardware.py
-echo "40 3 * * * root /usr/bin/python3 /opt/livline/hardware.py" \
+chown root:root /usr/local/libexec/livline/hardware.py
+chmod 755 /usr/local/libexec/livline/hardware.py
+echo "40 3 * * * root /usr/bin/python3 /usr/local/libexec/livline/hardware.py" \
     > /etc/cron.d/livline-hardware
-/usr/bin/python3 /opt/livline/hardware.py 2>/dev/null || true
+/usr/bin/python3 /usr/local/libexec/livline/hardware.py 2>/dev/null || true
 
 echo "-- Baggrundslys: kiosk-brugeren skal kunne slukke det..."
 # FUNDET PÅ HARDWARE, I ET MØRKT RUM: appen havde aldrig kunnet skrue lyset
@@ -612,10 +720,18 @@ cat > /usr/local/bin/livline-wifi <<'WIFIEOF'
 #!/usr/bin/env bash
 # Lægger et WiFi ind på maskinen — eller viser dem, der allerede er.
 #
-# KODEN TASTES. DEN SKRIVES ALDRIG SOM ARGUMENT.
-# En kode på kommandolinjen havner i ~/.bash_history og i maskinens
-# proces-liste, og den ville blive liggende i årevis på en maskine i en
-# fremmed stue. Det var nær sket én gang; derfor findes denne fil.
+# KODEN TASTES. DEN SKAL IKKE STÅ I EN KOMMANDO, DU SELV SKRIVER.
+# En kode, DU taster på kommandolinjen, havner i ~/.bash_history og ville
+# blive liggende i årevis på en maskine i en fremmed stue. Det var nær
+# sket én gang; derfor findes denne fil.
+#
+# ÆRLIGT OM GRÆNSEN: koden gives videre til nmcli som et argument, og i
+# det sekund kommandoen kører, kan den ses i maskinens proces-liste af en,
+# der kigger samtidig. Historikken rører den ikke, og filen gemmer den
+# ikke. Fundet ved gennemgangen 28.09: den gamle kommentar her sagde
+# "aldrig som argument", og det passede ikke. En kommentar, der lover for
+# meget, er farligere end ingen kommentar — man holder op med at tænke
+# over det, den dækker over.
 #
 # Nettet behøver IKKE være i nærheden. Familiens WiFi kan lægges ind,
 # mens maskinen står på dit eget bord — og det er sådan, det skal gøres:
@@ -990,6 +1106,27 @@ systemctl is-active --quiet cron \
     || echo "   ADVARSEL: cron kører ikke — nattevagt, netværkstjek, medie-"\
 "oprydning og hardware-tjek vil IKKE køre. Undersøg med: systemctl status cron"
 ls /etc/cron.d/livline-* 2>/dev/null | sed 's/^/   /'
+
+# INGEN AF DE ROOT-KØRTE SCRIPTS MÅ LIGGE, HVOR KIOSK-BRUGEREN KAN SKRIVE.
+# Kontrolleres til sidst, fordi det er den slags, der stille kan blive
+# lavet om senere — af en genkørsel, en oprydning eller en god idé.
+ROOTFEJL=0
+for f in /usr/local/libexec/livline \
+         /usr/local/libexec/livline/netcheck.sh \
+         /usr/local/libexec/livline/hardware.py; do
+    if [[ ! -e "$f" ]]; then
+        echo "   ADVARSEL: $f mangler"
+        ROOTFEJL=1
+    elif [[ "$(stat -c '%U' "$f")" != "root" ]]; then
+        echo "   ADVARSEL: $f ejes af $(stat -c '%U' "$f"), ikke root."
+        echo "   Root kører den fra cron — så kan kiosk-brugeren blive root."
+        ROOTFEJL=1
+    elif sudo -u "$KIOSK_USER" test -w "$f" 2>/dev/null; then
+        echo "   ADVARSEL: kiosk-brugeren kan skrive i $f"
+        ROOTFEJL=1
+    fi
+done
+[[ $ROOTFEJL -eq 0 ]] && echo "   root-opgaverne ligger uden for kiosk-brugerens rækkevidde ✔"
 
 cat <<'SLUT'
 

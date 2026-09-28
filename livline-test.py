@@ -2863,6 +2863,31 @@ def _():
         "install.sh kontrollerer ikke, at adgangen FAKTISK virker"
 
 
+@proev("en autologin, der peger forkert, stopper installationen")
+def _():
+    # Pegede GDM på en anden bruger, skrev scriptet en ADVARSEL og fortsatte
+    # til "Færdig" — hvor der står, at maskinen logger selv ind og starter
+    # Livline. Efter genstarten stod skærmen tom, og det kan IKKE rettes
+    # over Tailscale: uden grafisk session ingen app, og uden app intet
+    # livstegn. Så skal der køres ud til maskinen.
+    #
+    # En tilstand, der garanteret forhindrer opstart, må ikke være en
+    # advarsel, man kan overse klokken elleve om aftenen.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+    blok = kode.split("Aktiverer automatisk login")[1].split("echo \"--")[0]
+    assert "exit 1" in blok, \
+        "en forkert autologin er stadig kun en advarsel — skærmen står tom"
+    assert "cp -a /etc/gdm3/custom.conf" in blok, \
+        "der tages ingen kopi, før GDM's opsætning ændres"
+    assert "AutomaticLogin=$KIOSK_USER" in blok, \
+        "autologin rettes ikke til kiosk-brugeren"
+
+
 @proev("install.sh slår genvejstasterne fra")
 def _():
     sti = pathlib.Path(lv.__file__).parent / "install.sh"
@@ -3009,6 +3034,81 @@ def _():
         "koden tastes kun én gang — en tastefejl opdages først hos familien"
     assert "mindst 8 tegn" in blok, \
         "for kort kode giver nmcli's uforståelige 'psk: property is invalid'"
+
+
+@proev("/opdater kan ikke tændes uden en nøgle at kontrollere med")
+def _():
+    # FAIL-OPEN VAR DEN FORKERTE VEJ. Appen kontrollerer kun underskriften,
+    # hvis /etc/livline/opdater.pub findes — og installationen lagde den
+    # aldrig på. En ny maskine med en update-URL tog derfor imod hvad som
+    # helst fra den adresse og kørte det. En overtaget GitHub-konto eller
+    # en ændret adresse var nok til at få fremmed kode ind i en stue.
+    #
+    # Syntakstjek og prøvekørsel viser, at kode KAN køre. De siger intet
+    # om, hvem der har sendt den.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+
+    assert "NOEGLEFIL" in kode, "installationen spørger ikke om den offentlige nøgle"
+    blok = kode.split('if [[ -n "$UPDATE_URL" ]]; then')[1].split("\nfi\n")[0]
+    # Uden nøgle SKAL update-URL'en tømmes. Ellers står maskinen med
+    # /opdater tændt og ingen kontrol.
+    assert blok.count('UPDATE_URL=""') >= 3, \
+        "/opdater bliver stående tændt, selv om der ingen nøgle er"
+    assert "openssl pkey -pubin" in blok, \
+        "nøglen kontrolleres ikke — en forkert fil ville afvise ALT senere"
+    assert "install -o root -g root -m 644" in kode and "opdater.pub" in kode, \
+        "nøglen lægges ikke root-ejet på maskinen"
+
+    # Appens side af aftalen: uden nøgle er signering slået fra — det er
+    # med vilje (en maskine i drift må ikke kunne låse sig selv ude), og
+    # derfor er det installationens ansvar, at nøglen ER der.
+    app = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    assert "if not NOEGLE_STI.exists():" in app, \
+        "appen har ændret adfærd — gennemgå aftalen mellem app og installation"
+
+
+@proev("root kører intet fra en mappe, kiosk-brugeren kan skrive i")
+def _():
+    # EN VEJ FRA APPEN TIL ROOT. /opt/livline ejes af kiosk-brugeren — det
+    # skal den, for /opdater udskifter livline_bot.py. Men de to scripts,
+    # ROOT kører fra cron (netcheck hvert kvarter, hardware hver nat), lå i
+    # samme mappe. Filerne var root-ejede, mappen var ikke — og den, der må
+    # skrive i en mappe, må også omdøbe og erstatte filerne i den.
+    #
+    # Kunne nogen køre kode som Livline-brugeren — et billede, der vælter
+    # Pillow, eller en Python-pakke, der bliver overtaget — kunne de lægge
+    # deres egen netcheck.sh og have root et kvarter senere.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+
+    # Hver cron-linje, der kører som root, skal pege uden for /opt/livline
+    for linje in kode.splitlines():
+        if "cron.d" not in linje or "echo" not in linje:
+            continue
+        assert "/opt/livline" not in linje, \
+            f"root kører noget fra kiosk-brugerens mappe: {linje.strip()}"
+
+    assert "install -d -o root -g root -m 755 /usr/local/libexec/livline" in kode, \
+        "der oprettes ingen root-ejet mappe til de scripts, root kører"
+    for navn in ("netcheck.sh", "hardware.py"):
+        assert f"/usr/local/libexec/livline/{navn}" in kode, \
+            f"{navn} ligger ikke i den root-ejede mappe"
+        assert f"rm -f /opt/livline/netcheck.sh" in kode, \
+            "gamle kopier i /opt/livline ryddes ikke væk ved genkørsel"
+
+    # Og installationen skal KONTROLLERE det til sidst. Den slags bliver
+    # stille lavet om senere — af en genkørsel, en oprydning, en god idé.
+    assert "root-opgaverne ligger uden for kiosk-brugerens rækkevidde" in kode, \
+        "der kontrolleres ikke til sidst, at ejerskabet faktisk blev sat"
 
 
 @proev("nødnettet lægges ind ved installationen — og kan springes over")
