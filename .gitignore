@@ -1,0 +1,52 @@
+# Livline — hvad der ALDRIG må lægges i repoet
+#
+# Repoet er offentligt. Sikkerheden ligger i underskriften: maskinen
+# nægter kode, der ikke er signeret med den private nøgle på maskine 01.
+# Koden må derfor gerne læses. Det nedenstående må ikke.
+#
+# OBS: denne fil virker kun, når der bruges git på en computer.
+# Lægger du filer op gennem GitHubs "Upload files" i browseren,
+# bliver listen her IKKE spurgt. Den er en spærring, ikke en mur.
+
+# Bot-token og administrator-chat-id
+config.json
+config.json.*
+*.config.json
+
+# Familiens navne og chat-id'er
+whitelist.json
+whitelist.json.*
+
+# Signeringsnøglen. Den private må aldrig nogensinde herind —
+# så kan enhver lave kode, maskinerne tager imod.
+*.key
+*.pem
+id_*
+livline-signering*
+livline-noegle*
+
+# Samtaler, billeder og talebeskeder fra en maskine i drift
+historik.json
+media/
+*.oga
+*.ogg
+*.jpg
+*.jpeg
+*.png
+
+# Logge kan indeholde navne og beskedindhold
+*.log
+journal*.txt
+
+# Vejledninger med telefonnumre og adresser
+livline-udrykning*
+livline-privatliv*
+livline-levering*
+
+# Arbejdsfiler
+__pycache__/
+*.pyc
+*.bak
+*.ny
+.DS_Store
+Thumbs.db
