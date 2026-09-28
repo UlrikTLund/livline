@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.75
+VERSION 4.76
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -151,7 +151,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.75"
+VERSION = "4.76"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -1128,12 +1128,17 @@ class BotWorker:
             #
             # LIVLINE ER SKÆRM OG TASTATUR. Lyd er telefonens arbejde.
             hvad = "talebesked" if msg.voice else "musikfil"
+            # LINJEN PÅ SKÆRMEN SKAL SIGE DET SAMME SOM SVARET.
+            # Stod der kun "(Anne sendte en talebesked)", ville han sidde
+            # og vente på, at den begyndte. Sætningen skal være der, hvor
+            # han kigger — ikke kun på hendes telefon.
             self._modtag(Incoming(name, chat_id, "text",
-                                  text=f"({name} sendte en {hvad})"))
+                                  text=f"({name} sendte en {hvad} "
+                                       f"— kan desværre ikke vises her)"))
             try:
                 await msg.reply_text(
                     f"🎙 {hvad.capitalize()}en kan desværre ikke afspilles "
-                    f"her på Livline-skærmen.\n"
+                    f"på Livline-skærmen.\n"
                     f"Jeg har sendt den videre til de andre i familien.\n"
                     f"Skriv gerne et par ord i stedet.")
             except Exception as e:
@@ -1159,10 +1164,11 @@ class BotWorker:
             # Filen hentes derfor slet ikke ned. Det fjerner samtidig
             # downloadfejl, diskforbrug og to afspillere oven i hinanden.
             self._modtag(Incoming(name, chat_id, "text",
-                                  text=f"({name} sendte en video)"))
+                                  text=f"({name} sendte en video "
+                                       f"— kan desværre ikke vises her)"))
             try:
                 await msg.reply_text(
-                    "🎬 Videoen kan desværre ikke vises her på "
+                    "🎬 Videoen kan desværre ikke vises på "
                     "Livline-skærmen.\n"
                     "Jeg har sendt den videre til de andre i familien.\n"
                     "Skriv gerne et par ord om, hvad den viser.")
@@ -2819,7 +2825,7 @@ class LivlineUI:
             # "voice" og "video" står stadig i historikken fra ældre
             # versioner. Ingen af delene afspilles længere — linjen bliver
             # stående, så en gammel samtale ikke får huller i sig.
-            self._insert("🎙  Talebesked (kan ikke afspilles her)\n")
+            self._insert("🎙  Talebesked — kan desværre ikke vises her\n")
 
         self._rul_til_bund()
         if replay:

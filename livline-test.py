@@ -1460,8 +1460,11 @@ def _():
     assert "_download" not in gren, \
         "videoen hentes stadig ned — filen fylder, og der er intet at bruge den til"
     assert "reply_text" in gren, "afsenderen får ikke at vide, at video ikke vises"
-    assert "ikke vises her" in gren, \
+    assert "ikke vises på" in gren and "Livline-skærmen" in gren, \
         "svaret siger ikke, at det er SKÆRMEN der ikke kan — ikke ham"
+    assert "kan desværre ikke vises her" in gren, \
+        "linjen på skærmen siger ikke, hvorfor videoen ikke kommer — " \
+        "så sidder han og venter på, at den begynder"
     assert "_rebroadcast" in gren, \
         "de øvrige i tråden får ikke videoen på deres telefoner"
 
@@ -1481,8 +1484,11 @@ def _():
         "talebeskeden hentes stadig ned — der er intet at bruge filen til"
     assert "reply_text" in gren, \
         "afsenderen får ikke at vide, at talebeskeden ikke afspilles"
-    assert "ikke afspilles" in gren and "her på Livline" in gren, \
+    assert "ikke afspilles" in gren and "Livline-skærmen" in gren, \
         "svaret siger ikke, at det er SKÆRMEN der ikke kan"
+    assert "kan desværre ikke vises her" in gren, \
+        "linjen på skærmen siger ikke, hvorfor der ikke kommer lyd — " \
+        "så sidder han og venter på, at den begynder"
     assert "_rebroadcast" in gren, \
         "de øvrige i tråden får ikke talebeskeden på deres telefoner"
 
