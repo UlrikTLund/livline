@@ -653,6 +653,21 @@ def _():
     assert any("Ring til mig" in x[1] for x in sendte), \
         "et andet svar blev også bremset — så kan hun ikke skifte mening"
 
+    # … men SKIFTEVIS to taster må heller ikke slippe igennem i en strøm.
+    # Q, X, Q, X er aldrig "samme svar", så den første spærring fangede
+    # ingenting. Familien fik "Tak, Nej tak, Tak, Nej tak" i lang række,
+    # og for dem ligner det panik — ikke en skælvende finger.
+    ui._sidste_svar = 0.0
+    ui._sidste_svar_tekst = ""
+    ui._svar_tider = []
+    sendte.clear()
+    for _i in range(15):
+        ui._send_reply("Tak")
+        ui._send_reply("Nej tak")
+    ui.root.update()
+    assert len(sendte) <= lv.SVAR_MAKS_I_VINDUE, \
+        f"{len(sendte)} svar sluppet igennem ved skiftevise taster"
+
     # … og efter pausen må det samme svar sendes igen
     ui._sidste_svar -= lv.SVAR_PAUSE_SEK + 1
     ui._send_reply("Tak")
@@ -660,6 +675,122 @@ def _():
     assert len([x for x in sendte if "Tak" in x[1]]) == 2, \
         "svaret kunne ikke sendes igen efter pausen"
     luk(ui)
+
+
+@proev("én defekt besked må ikke gøre maskinen døv for altid")
+def _():
+    # DEN ALVORLIGSTE FEJL I PROGRAMMET. _poll_inbox bestilte sit næste
+    # gennemløb til SIDST i funktionen. Kastede én besked en fejl undervejs
+    # — fx en halvt skrevet billedfil — nåede den linje aldrig, og løkken
+    # stoppede for altid. Vinduet stod og så levende ud, tasterne virkede,
+    # rulningen virkede. Ingen besked kom nogensinde igennem igen, og
+    # processen døde ikke, så genstartsvagten opdagede intet.
+    ui = med_tre_personer(blink=False)
+    try:
+        rigtig = ui._modtag_til_skaerm
+        kaldt = []
+
+        def sprænger(m):
+            kaldt.append(m)
+            if len(kaldt) == 1:
+                raise RuntimeError("defekt billedfil")
+            return rigtig(m)
+
+        ui._modtag_til_skaerm = sprænger
+        ui.inbox.put(lv.Incoming("Mor", 11, "photo", text="",
+                                 file_path=pathlib.Path("/tmp/ikke-et-billede")))
+        ui.inbox.put(lv.Incoming("Mor", 11, "text", text="kommer du i morgen?"))
+        ui._poll_inbox()
+        ui.root.update()
+
+        assert len(kaldt) == 2, \
+            "den næste besked blev aldrig forsøgt — én fejl tog resten med sig"
+        assert "kommer du i morgen" in paa_skaermen(ui), \
+            "beskeden efter den defekte nåede aldrig skærmen"
+        assert "kunne ikke vises" in paa_skaermen(ui).lower(), \
+            "den defekte besked forsvandt uden et ord"
+        # Og løkken skal have bestilt sit næste gennemløb
+        assert ui.root.tk.call("after", "info"), \
+            "der er ikke bestilt et nyt gennemløb — maskinen er døv"
+    finally:
+        luk(ui)
+
+
+@proev("en ulæst besked er stadig ulæst efter genstarten kl. 3")
+def _():
+    # HVER NAT. Familien skriver kl. 23.30, han sover, maskinen genstarter
+    # kl. 3. _load_history genskabte beskederne på skærmen, men ikke
+    # _ukvitteret — så om morgenen stod der "Læst 23.30" med grønt flueben,
+    # familien havde aldrig fået kvitteringen, og trykkede han Enter, skete
+    # der ingenting.
+    hist = ARBEJDE / "historik.json"
+    WHITELIST.write_text(json.dumps({"111": "Ulrik"}))
+    ui = byg(mode="faellestraad", blink=False)
+    ui.whitelist = lv.Whitelist(WHITELIST)
+    try:
+        besked(ui, 111, "Ulrik", "sover du?")
+        assert 111 in ui._ukvitteret, "ventelisten virker slet ikke"
+        hist.write_text(json.dumps(ui._rows, ensure_ascii=False),
+                        encoding="utf-8")
+    finally:
+        luk(ui)
+
+    # … og nu som efter genstarten kl. 3: ny brugerflade, samme historik
+    ui = byg(mode="faellestraad", blink=False)
+    ui.whitelist = lv.Whitelist(WHITELIST)
+    try:
+        ui._load_history()
+        ui.root.update()
+        assert 111 in ui._ukvitteret, \
+            "beskeden blev regnet for læst efter genstart — " \
+            "familien fik aldrig en kvittering, og Enter gør ingenting"
+    finally:
+        hist.unlink(missing_ok=True)
+        WHITELIST.write_text("{}")
+        luk(ui)
+
+
+@proev("et eget svar i historikken rydder ventelisten igen")
+def _():
+    # Modstykket: har han svaret, må beskeden ikke stå som ulæst bagefter,
+    # for så ville maskinen bede om en kvittering, der allerede er givet.
+    hist = ARBEJDE / "historik.json"
+    WHITELIST.write_text(json.dumps({"111": "Ulrik"}))
+    ui = byg(mode="faellestraad", blink=False)
+    ui.whitelist = lv.Whitelist(WHITELIST)
+    try:
+        besked(ui, 111, "Ulrik", "sover du?")
+        raekker = list(ui._rows)
+        raekker.append({"navn": "Du", "chat_id": 111, "type": "text",
+                        "tekst": "Tak", "fil": None,
+                        "tid": raekker[-1]["tid"], "egen": True})
+        hist.write_text(json.dumps(raekker, ensure_ascii=False),
+                        encoding="utf-8")
+    finally:
+        luk(ui)
+
+    ui = byg(mode="faellestraad", blink=False)
+    ui.whitelist = lv.Whitelist(WHITELIST)
+    try:
+        ui._load_history()
+        assert not ui._ukvitteret, \
+            f"han havde svaret, men står stadig som skyldig: {ui._ukvitteret}"
+    finally:
+        hist.unlink(missing_ok=True)
+        WHITELIST.write_text("{}")
+        luk(ui)
+
+
+@proev("en ulæselig historik siges højt i stedet for at ligne en tom skærm")
+def _():
+    # En tom skærm læses som "ingen har skrevet". Det er en helt anden
+    # besked end "jeg kan ikke komme til det, der er skrevet".
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    blok = kilde.split("def _load_history")[1].split("def ")[0]
+    assert "log.warning" in blok, "en ulæselig historik forsvinder i tavshed"
+    assert "_historik_fejl" in blok, "skærmen får intet at vide om fejlen"
+    assert "Tidligere beskeder kunne ikke læses" in kilde, \
+        "brugeren ser ikke, at der mangler noget"
 
 
 @proev("hjælpelinjen siger, hvad Enter gør lige nu")
@@ -1268,64 +1399,78 @@ def _():
     ui._vindue_vagt(0)          # må ikke vælte, når vinduet er lukket
 
 
-@proev("vagten holder pause, mens en video afspilles")
+@proev("vagten holder ALDRIG pause — et vindue foran er altid en fejl")
 def _():
-    # SET I DRIFT: skærmen skrev "🎬 Ny video — afspilles…", lyden kom, og
-    # der skete intet synligt. mpv åbnede sit vindue, og vagten satte
-    # Livline -topmost igen inden for fem sekunder — videoen kørte bagved.
-    # To mekanismer, der hver for sig var rigtige.
-    class FalskAfspiller:
-        def __init__(self): self.slut = False; self.stoppet = False
-        def poll(self): return 0 if self.slut else None
-        def terminate(self): self.stoppet = True
-
+    # Her stod to prøver om en videoafspiller, der måtte have skærmen.
+    # Video er fjernet i v4.74: mpv tog både skærmen OG tastaturet, så
+    # Q lukkede videoen i stedet for at sende "Tak". En tast, der skifter
+    # betydning, er værre end en funktion, der mangler.
+    #
+    # Dermed findes der ikke længere et lovligt vindue foran Livline.
+    # Vagten skal altid slå sig frem — uden undtagelser at gætte om.
     ui = byg()
     try:
         kaldt = []
         rigtig = ui.root.attributes
         ui.root.attributes = lambda *a: (kaldt.append(a), rigtig(*a))[1]
-
-        afspiller = FalskAfspiller()
-        ui._afspiller = afspiller
-        ui._afspiller_start = time.monotonic()
-        kaldt.clear()
-        ui._vindue_vagt(3)
-        ui.root.update()
-        assert not [a for a in kaldt if a[:2] == ("-topmost", True)], \
-            f"vagten slog sig frem oven på videoen: {kaldt}"
-
-        # ... og tager skærmen tilbage, når videoen er slut
-        afspiller.slut = True
-        kaldt.clear()
         ui._vindue_vagt(3)
         ui.root.update()
         assert [a for a in kaldt if a[:2] == ("-topmost", True)], \
-            "vagten kom ikke tilbage, da videoen sluttede"
-        assert ui._afspiller is None, "afspilleren blev ikke ryddet op"
+            "vagten slog sig ikke frem"
         ui.root.attributes = rigtig
     finally:
         luk(ui)
+    # Ingen afspiller må kunne holde vagten væk
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    vagt = kilde.split("def _vindue_vagt")[1].split("def ")[0]
+    kode = "\n".join(l for l in vagt.splitlines()
+                     if not l.lstrip().startswith("#"))
+    assert "return" not in kode.split("try:")[0], \
+        "vagten har fået en undtagelse igen — så kan et vindue blive stående"
 
 
-@proev("en hængende video kan ikke låse skærmen for altid")
+@proev("video vises ikke, og afsenderen får det at vide")
 def _():
-    # Uden loft ville en afspiller, der aldrig slutter, holde vagten væk —
-    # og maskinen ville se død ud, uden at nogen kunne se hvorfor.
-    class HaengendeAfspiller:
-        def __init__(self): self.stoppet = False
+    # Video blev fjernet, fordi afspilleren kaprede tastaturet. Men en
+    # video, der bare forsvandt, ville være værre: afsenderen ville tro,
+    # den var set. Derfor skal hun have svar — og de øvrige i tråden skal
+    # have selve videoen på deres telefoner.
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    gren = kilde.split("elif msg.video or msg.video_note:")[1].split("else:")[0]
+    assert "_download" not in gren, \
+        "videoen hentes stadig ned — filen fylder, og der er intet at bruge den til"
+    assert "reply_text" in gren, "afsenderen får ikke at vide, at video ikke vises"
+    assert "kan ikke vise video" in gren, \
+        "svaret siger ikke, at det er SKÆRMEN der ikke kan — ikke ham"
+    assert "_rebroadcast" in gren, \
+        "de øvrige i tråden får ikke videoen på deres telefoner"
+    # Og intet sted må starte en afspiller med billede
+    assert "--fs" not in kilde, "der startes stadig en fuldskærmsafspiller"
+    assert "--no-video" in kilde, "lyd afspilles ikke længere uden billede"
+
+
+@proev("to talebeskeder spiller ikke oven i hinanden")
+def _():
+    # To pårørende sender talebeskeder få sekunder efter hinanden. Før
+    # startede begge hver sin afspiller og talte oven i hinanden — ingen
+    # af dem kunne forstås, og han kunne ikke stoppe nogen af dem.
+    class Koerende:
         def poll(self): return None
-        def terminate(self): self.stoppet = True
 
     ui = byg()
     try:
-        h = HaengendeAfspiller()
-        ui._afspiller = h
-        ui._afspiller_start = time.monotonic() - (lv.AFSPIL_MAKS + 1)
-        assert ui._afspiller_koerer() is False, \
-            "en hængende afspiller fik lov at beholde skærmen"
-        assert h.stoppet, "den hængende afspiller blev ikke stoppet"
-        assert lv.AFSPIL_MAKS <= 1800, \
-            f"loftet er {lv.AFSPIL_MAKS} sek. — for længe at stirre på en frossen skærm"
+        ui._lyd = Koerende()
+        startet = []
+        rigtig = subprocess.Popen
+        subprocess.Popen = lambda *a, **kw: startet.append(a) or rigtig(
+            ["true"], **{k: v for k, v in kw.items() if k != "shell"})
+        try:
+            ui._play(pathlib.Path("/tmp/findes-ikke.ogg"))
+        finally:
+            subprocess.Popen = rigtig
+        assert startet == [], "der blev startet en afspiller nummer to"
+        assert "talebesked" in paa_skaermen(ui).lower(), \
+            "brugeren fik ikke at vide, hvorfor den anden ikke blev afspillet"
     finally:
         luk(ui)
 
@@ -2787,12 +2932,31 @@ def _():
     assert "/usr/local/bin/livline-wifi" in t, \
         "livline-wifi lægges ikke på maskinen"
     blok = t.split("livline-wifi: læg et netværk ind")[1].split("WIFIEOF")[1]
-    assert "read -rsp" in blok or "--ask" in blok, \
+    assert "read -rsp" in blok, \
         "koden tastes ikke skjult — den kan ende i historikken"
-    assert "nmcli --ask" in blok, \
-        "er nettet i nærheden, skal nmcli selv spørge — så rører koden aldrig argv"
     assert "connection add type wifi" in blok, \
         "et net uden for rækkevidde kan ikke lægges ind hjemmefra"
+
+    # MÅ ALDRIG KOBLE PÅ MED DET SAMME.
+    # Maskinen fjernstyres over det net, den står på. Begynder den at
+    # skifte, ryger SSH-forbindelsen i samme sekund — før man når at taste
+    # koden. Set to gange i drift, og anden gang ventede den 90 sekunder
+    # på en kode, ingen kunne skrive.
+    # Kun KODEN tæller. Kommentaren forklarer netop, hvorfor "device wifi
+    # connect" blev fjernet — og første udgave af prøven læste sin egen
+    # forklaring som om linjen stadig blev brugt. Anden gang samme fælde.
+    kode = "\n".join(l for l in blok.splitlines()
+                     if not l.lstrip().startswith("#"))
+    assert "device wifi connect" not in kode, \
+        "kommandoen kobler på med det samme og river fjernforbindelsen væk"
+
+    # Koden kan ikke ses, mens den tastes. Så skal den tastes to gange —
+    # ellers opdages tastefejlen først hos familien, hvor maskinen bare
+    # ikke vil koble sig på, og ingen kan se hvorfor.
+    assert blok.count("read -rsp") >= 2, \
+        "koden tastes kun én gang — en tastefejl opdages først hos familien"
+    assert "mindst 8 tegn" in blok, \
+        "for kort kode giver nmcli's uforståelige 'psk: property is invalid'"
 
 
 @proev("install.sh lægger livline-vis på maskinen")

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.71"
+INSTALL_VER="4.74"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -86,7 +86,7 @@ apt-get update -q || echo "   ADVARSEL: pakkelisterne kunne ikke hentes fuldt ud
 apt-get install -y -q python3 python3-pip python3-venv python3-tk python3-pil \
     python3-pil.imagetk mpv ffmpeg \
     xvfb smartmontools fonts-noto-color-emoji cron openssl
-#   ffmpeg          → beholdt: mpv bruger dens biblioteker til video
+#   ffmpeg          → beholdt: mpv bruger dens biblioteker til lyd
 #                     (alsa-utils er væk sammen med talebesked-optagelsen)
 #   xvfb            → /opdater prøvekører en ny version, før den installeres
 #   smartmontools   → diskens SMART-status med i heartbeat
@@ -607,39 +607,63 @@ fi
 
 SSID="$1"
 
-# ER NETTET I NÆRHEDEN? Så lader vi nmcli spørge om koden selv. Den vej
-# rører koden aldrig kommandolinjen — heller ikke et kort øjeblik.
-if nmcli -t -f SSID device wifi list 2>/dev/null | grep -qxF "$SSID"; then
-    echo "-- \"$SSID\" er i nærheden. Tast koden, når der bliver spurgt."
-    nmcli --ask device wifi connect "$SSID"
-    echo
-    echo "Forbundet og gemt: $SSID"
-    exit 0
+# KOBL ALDRIG PÅ MED DET SAMME.
+#
+# Her stod før en gren, der brugte "nmcli --ask device wifi connect", når
+# nettet var i nærheden. Den lod nmcli spørge om koden, så den aldrig rørte
+# kommandolinjen — pænt i teorien.
+#
+# I praksis: maskinen fjernstyres over det net, den står på. Begynder den
+# at skifte, ryger SSH-forbindelsen i samme sekund — FØR man når at taste
+# koden. Set to gange. Anden gang lod jeg den stå, og den ventede 90
+# sekunder på en kode, ingen kunne skrive.
+#
+# Nu gør kommandoen kun ÉN ting: den lægger nettet ind. Maskinen kobler
+# sig selv på, når nettet er det bedste, den kan se — og hos familien er
+# det det eneste, der findes.
+read -rsp "Kode til \"$SSID\" (tom = åbent net): " K1; echo
+if [[ -n "$K1" ]]; then
+    # WPA kræver mindst 8 tegn. Uden dette tjek svarer nmcli
+    # "psk: property is invalid", og det siger ingenting om hvorfor.
+    if (( ${#K1} < 8 )); then
+        echo "FEJL: koden skal være mindst 8 tegn (WPA's krav)."
+        echo "      Sæt en længere kode på nettet, og prøv igen."
+        exit 1
+    fi
+    # To gange, fordi koden ikke kan ses, mens den tastes. En tastefejl
+    # her opdages ellers først hos familien, hvor maskinen bare ikke vil
+    # koble sig på — og hvor ingen kan se hvorfor.
+    read -rsp "Skriv den igen: " K2; echo
+    if [[ "$K1" != "$K2" ]]; then
+        echo "FEJL: de to koder er ikke ens. Intet ændret."
+        exit 1
+    fi
 fi
 
-echo "-- \"$SSID\" er ikke i nærheden. Lægges ind til senere brug."
-read -rsp "Kode til \"$SSID\" (tom = åbent net): " KODE; echo
-
 if nmcli -g NAME connection show 2>/dev/null | grep -qxF "$SSID"; then
-    echo "   findes i forvejen — opdaterer koden"
-    if [[ -n "$KODE" ]]; then
+    echo "   \"$SSID\" findes i forvejen — opdaterer koden"
+    if [[ -n "$K1" ]]; then
         nmcli connection modify "$SSID" \
-            wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$KODE"
+            wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$K1"
     else
         nmcli connection modify "$SSID" wifi-sec.key-mgmt none
     fi
-elif [[ -n "$KODE" ]]; then
+elif [[ -n "$K1" ]]; then
     nmcli connection add type wifi con-name "$SSID" ssid "$SSID" \
-        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$KODE"
+        wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$K1"
 else
     nmcli connection add type wifi con-name "$SSID" ssid "$SSID"
 fi
-KODE=""
+K1=""; K2=""
 
 nmcli connection modify "$SSID" connection.autoconnect yes
 echo
 echo "Lagt ind: $SSID"
-echo "Maskinen kobler sig selv på, næste gang nettet er i nærheden."
+echo "Maskinen kobler sig selv på, når nettet er i nærheden — og når det"
+echo "er det eneste, den kan se. Din fjernforbindelse er urørt."
+echo
+echo "Vil du koble på NU, så vid at du mister forbindelsen til maskinen:"
+echo "   sudo nmcli connection up \"$SSID\""
 WIFIEOF
 chmod 755 /usr/local/bin/livline-wifi
 echo "   livline-wifi lagt på maskinen ✔"
@@ -771,7 +795,7 @@ chmod 755 /usr/local/bin/livline-rapport
     && echo "   livline-rapport svarer ✔" \
     || echo "   ADVARSEL: livline-rapport kunne ikke køre"
 
-echo "-- Medie-oprydning: familiens billeder/videoer slettes efter 30 dage..."
+echo "-- Medie-oprydning: familiens billeder og talebeskeder slettes efter 30 dage..."
 # (Beskedhistorikken i historik.json holder sig selv på 100 poster.)
 echo "30 20 * * * root find /var/lib/livline/media -type f -mtime +30 -delete" \
     > /etc/cron.d/livline-media

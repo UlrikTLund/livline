@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.71
+VERSION 4.74
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -150,7 +150,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.71"
+VERSION = "4.74"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -217,11 +217,13 @@ RUL_ANDEL = 0.25          # hvor stor en del af SKÆRMEN ét tryk på pil op/ned
                           # til flere skærmfulde. En fjerdedel af det synlige
                           # er det samme, uanset hvor lang samtalen er, og
                           # lader altid noget af det læste blive stående
-AFSPIL_MAKS = 600         # sekunder en video højst må have skærmen. Uden loftet
-                          # kunne en hængende afspiller lægge beslag på hele
-                          # skærmen, og maskinen ville se død ud
 SEND_SVAR_FORSOEG = 60    # halve sekunder der ventes på svar fra Telegram,
                           # før en afsendelse regnes for mislykket (30 sek.)
+SVAR_VINDUE_SEK = 10.0    # … og højst SVAR_MAKS_I_VINDUE svar i alt inden
+SVAR_MAKS_I_VINDUE = 3    # for så mange sekunder. Spærringen ovenfor kunne
+                          # omgås ved at ramme to taster skiftevis — Q, X,
+                          # Q, X er aldrig "samme svar". Ingen sender fire
+                          # forskellige svar på ti sekunder med vilje.
 SVAR_PAUSE_SEK = 3.0      # mindste tid mellem to ENS svar.
                           # SET I DRIFT: holdes en tast nede, gentager
                           # tastaturet den tredive gange i sekundet — og
@@ -550,6 +552,11 @@ class BotWorker:
                     try:
                         loop.close()
                     except Exception:
+                        # TAVSHED MED VILJE — den eneste i filen.
+                        # Vi er ved at rydde op efter en løkke, der allerede
+                        # er død. At oprydningen fejler, kan der ikke gøres
+                        # noget ved, og en advarsel her ville komme oven i
+                        # den rigtige fejl og skjule den.
                         pass
 
     def _wait_for_network(self) -> None:
@@ -639,8 +646,17 @@ class BotWorker:
             await context.bot.send_message(
                 chat_id, f"Du er nu forbundet til {self.config.machine_name}. "
                          "Alt hvad du sender her, vises på skærmen.")
-        except Exception:
-            pass
+        except Exception as e:
+            # HUN SKAL VIDE, AT HUN ER MED.
+            # Her stod "pass". Fejlede bekræftelsen, fik den nye person
+            # aldrig at vide, at hun var godkendt — og administrator troede,
+            # hun var i gang. Hun skriver ikke, fordi hun ikke ved, hun må.
+            log.warning("Kunne ikke bekræfte over for %s: %s", chat_id, e)
+            await update.effective_message.reply_text(
+                f"⚠️ Tilføjet, men kunne IKKE sige det til {chat_id}.\n"
+                f"Grund: {e}\n"
+                f"Hun ved ikke, at hun er med. Sig det selv, eller bed "
+                f"hende skrive til botten.")
 
     def _tema_note(self) -> str:
         """Et tema, maskinen ikke kender, bruges ikke — den falder tilbage
@@ -717,8 +733,16 @@ class BotWorker:
                     "Sidste besked fra familien: "
                     + ("i dag" if dage == 0 else f"{dage} dage siden")
                     + ("  ⚠️ ring til familien" if dage >= 14 else ""))
-        except Exception:
-            pass
+        except Exception as e:
+            # EN MANGLENDE LINJE LIGNER GODE NYHEDER.
+            # Her stod "pass". Kunne historikken ikke læses, forsvandt
+            # linjen om, hvor længe siden familien sidst skrev — og et
+            # /status uden advarsler ser ud, som om alt er i orden.
+            # Netop den linje er den vigtigste: en maskine, der virker
+            # perfekt og ikke bliver brugt, er også en fejl.
+            log.warning("Kunne ikke læse historikken til /status: %s", e)
+            linjer.append("⚠️ Kunne ikke læse historikken — "
+                          "ved ikke, hvornår familien sidst skrev")
         # Hardware skrives dagligt af et cron-job (root), så en døende disk
         # eller et udslidt batteri opdages hjemmefra
         try:
@@ -735,8 +759,13 @@ class BotWorker:
             if hw.get("opdateringer"):
                 linjer.append(f"Systemopdateringer venter: {hw['opdateringer']}"
                               "  (sikkerhed er allerede installeret)")
-        except Exception:
-            pass
+        except Exception as e:
+            # Samme fælde: uden disse linjer siger /status intet om batteri
+            # og disk — og tavshed læses som "alt er godt". En døende disk
+            # ville forsvinde ud af rapporten netop når den betød mest.
+            log.warning("Kunne ikke læse hardware-tjekket til /status: %s", e)
+            linjer.append("⚠️ Kunne ikke læse hardware-tjekket — "
+                          "intet om batteri og disk i dag")
         return "\n".join(linjer)
 
     # -- admin-kommandoer --------------------------------------------------------
@@ -761,8 +790,15 @@ class BotWorker:
             await context.bot.send_message(
                 chat_id, f"Du er nu forbundet til {self.config.machine_name}. "
                          "Alt hvad du sender her, vises på skærmen.")
-        except Exception:
-            pass
+        except Exception as e:
+            # Samme som ved godkend-knappen: uden denne besked ved hun ikke,
+            # at hun er med — og du tror, hun er i gang.
+            log.warning("Kunne ikke bekræfte over for %s: %s", chat_id, e)
+            await update.effective_message.reply_text(
+                f"⚠️ Tilføjet, men kunne IKKE sige det til {chat_id}.\n"
+                f"Grund: {e}\n"
+                f"Vedkommende ved ikke, at hun er med. Sig det selv, eller "
+                f"bed hende skrive til botten.")
 
     async def _cmd_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -1082,25 +1118,32 @@ class BotWorker:
             path = await self._download(msg.voice.file_id, context, ".oga")
             self._modtag(Incoming(name, chat_id, "voice", file_path=path))
         elif msg.video or msg.video_note:
-            media = msg.video or msg.video_note
+            # VIDEO VISES IKKE LÆNGERE PÅ SKÆRMEN.
+            #
+            # Afspilleren tog hele skærmen OG tastaturet: mpv binder selv
+            # q til "luk" og pilene til at spole. Mens en video kørte,
+            # gjorde de otte taster på tastaturdækket altså noget helt
+            # andet end det, der stod på papiret — Q lukkede videoen i
+            # stedet for at sende "Tak".
+            #
+            # For en mand med demens er en tast, der skifter betydning,
+            # værre end en funktion, der mangler. Videoen når stadig
+            # familien på deres telefoner; det er kun skærmen i stuen,
+            # der ikke viser den.
+            #
+            # Filen hentes derfor slet ikke ned. Det fjerner samtidig
+            # downloadfejl, diskforbrug og to afspillere oven i hinanden.
+            self._modtag(Incoming(name, chat_id, "text",
+                                  text=f"({name} sendte en video)"))
             try:
-                path = await self._download(media.file_id, context, ".mp4")
-            except Exception as e:  # fx > 20 MB downloadgrænse
-                log.error("Video kunne ikke hentes: %s", e)
-                self._modtag(Incoming(name, chat_id, "text",
-                    text="(sendte en video, der var for stor til at vise)"))
-                await msg.reply_text("Videoen er for stor til Livline-skærmen "
-                                     "(maks. ca. 20 MB). Prøv en kortere video.")
-                # De ØVRIGE skal også vide det. Ellers ser de ingenting og
-                # tror, der ikke er sket noget — mens afsenderen tror, hun
-                # har delt en video med familien.
-                if self.config.mode == "faellestraad":
-                    await self._rebroadcast(
-                        msg, name, exclude=chat_id,
-                        note="sendte en video, der var for stor til at vise")
-                return
-            self._modtag(Incoming(name, chat_id, "video",
-                                  text=msg.caption or "", file_path=path))
+                await msg.reply_text(
+                    "🎬 Videoen er sendt videre til de andre i familien — "
+                    "men Livline-skærmen kan ikke vise video.\n"
+                    "Skriv gerne et par ord om, hvad den viser.")
+            except Exception as e:
+                log.warning("Kunne ikke svare om video til %s: %s", chat_id, e)
+            if self.config.mode == "faellestraad":
+                await self._rebroadcast(msg, name, exclude=chat_id)
         else:
             # Alt andet (stickers, GIF'er, dokumenter, lokationer, kontakter)
             # blev tidligere ignoreret lydløst — familien så "leveret", mens
@@ -1372,14 +1415,15 @@ class LivlineUI:
         self._sidste_svar: float = 0.0
         self._sidste_svar_tekst: str = ""
         self._svar_spaerret: bool = False
+        self._svar_tider: list[float] = []   # se SVAR_MAKS_I_VINDUE
         self.selected: int | None = None      # valgt modtager (enkelte-mode)
         self._rows: list[dict] = []           # hele historikken i hukommelsen
         self._venter: set[int] = set()        # ulæste samtaler
         self._ukvitteret: set[int] = set()    # afsendere, der venter på kvittering
-        # Afspilleren skal have skærmen for sig selv, mens den kører — se
-        # _afspiller_koerer og vinduesvagten.
-        self._afspiller: subprocess.Popen | None = None
-        self._afspiller_start = 0.0
+        # Talebeskeder afspilles én ad gangen. Video vises ikke længere,
+        # så ingen afspiller kan tage skærmen fra samtalen.
+        self._lyd: subprocess.Popen | None = None
+        self._historik_fejl: str | None = None  # sat, hvis historikken ikke kunne læses
         self._img_refs: list = []  # Tkinter kræver at billedreferencer holdes i live
 
         # Ukendt tema faldt før stille tilbage til "varm". Det er samme
@@ -1471,6 +1515,15 @@ class LivlineUI:
         # reserveret plads. Ellers kan beskedfeltet (expand=True) skubbe dem
         # ud af skærmen ved stor skrift — fejl rettet i 1.3.
         # tast -> svartekst (tasterne kommer fra config "taster")
+        # zip() stopper ved den korteste liste UDEN at sige noget. Er der
+        # flere svar end taster, ville det sidste svar forsvinde lydløst:
+        # teksten står på tastaturdækket, og tasten gør ingenting.
+        # Config.load fylder tasterne op, så det bør ikke kunne ske — men
+        # "bør ikke kunne ske" er ikke det samme som "siger til, hvis det gør".
+        if len(config.keys) != len(config.replies):
+            log.warning("%d taster til %d svar — de sidste svar kan ikke "
+                        "sendes. Ret \"taster\" i config.",
+                        len(config.keys), len(config.replies))
         self.replies = dict(zip(config.keys, config.replies))
         self._knapper: list = []
         # "vis_knapper": false → ingen knaprad på skærmen; tasterne virker
@@ -1720,9 +1773,15 @@ class LivlineUI:
 
     def run(self) -> None:
         self._load_history()
+        # Kunne historikken ikke læses, må skærmen IKKE bare se tom ud.
+        # En tom skærm læses som "ingen har skrevet" — og det er en helt
+        # anden besked end "jeg kan ikke komme til det, der er skrevet".
+        if self._historik_fejl:
+            self._insert("⚠️  Tidligere beskeder kunne ikke læses. "
+                         "Nye beskeder virker.\n", tag="name")
         # Er skærmen tom, ville den ligne en slukket maskine — vis en
         # dæmpet linje, der forsvinder ved første besked
-        if self.text.index("end-1c") == "1.0":
+        elif self.text.index("end-1c") == "1.0":
             self._insert("Venter på beskeder fra familien\n", tag="tom")
             self._tom_linje = True
         self.bot.start()
@@ -1748,10 +1807,47 @@ class LivlineUI:
         tegnes igen, når brugeren skifter modtager i "enkelte"-tilstand."""
         try:
             rows = json.loads(self._history_path.read_text(encoding="utf-8"))
-        except Exception:
+        except FileNotFoundError:
+            return                      # frisk maskine — helt normalt
+        except Exception as e:
+            # EN TOM SKÆRM LIGNER EN UBRUGT MASKINE.
+            # Her stod bare "return". Var historikken beskadiget, startede
+            # maskinen med "Venter på beskeder fra familien" — som om
+            # ingen havde skrevet. Ingen kunne se, at måneders samtale var
+            # utilgængelig.
+            log.warning("Kunne ikke læse historikken: %s", e)
+            self._historik_fejl = str(e)
             return
         rows = rows[-HISTORY_MAX:]
         self._rows = list(rows)
+
+        # HVEM VENTER STADIG PÅ EN KVITTERING?
+        #
+        # Her lå en fejl, der ramte HVER NAT. Maskinen genstarter kl. 3.
+        # Skrev familien kl. 23.30, og han sov, blev beskeden genskabt på
+        # skærmen — men _ukvitteret blev ikke genskabt. Om morgenen stod
+        # der "Læst 23.30" med grønt flueben, familien havde aldrig fået
+        # en kvittering, og trykkede han Enter, skete der ingenting.
+        #
+        # Reglen her er den samme som i _kvitter: en indgående besked
+        # venter, indtil der kommer et eget svar. I fællestråd rydder ét
+        # svar hele tråden; i enkelte kun den ene samtale.
+        self._ukvitteret = set()
+        for r in rows:
+            try:
+                cid = int(r["chat_id"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if r.get("egen"):
+                if self.config.mode == "faellestraad":
+                    self._ukvitteret.clear()
+                else:
+                    self._ukvitteret.discard(cid)
+            else:
+                self._ukvitteret.add(cid)
+        if self._ukvitteret:
+            log.info("Efter opstart venter %d besked(er) stadig på kvittering",
+                     len(self._ukvitteret))
         if self.config.mode == "enkelte":
             # Vis kun den seneste samtale — resten hentes frem med F-tasterne
             for r in reversed(rows):
@@ -1863,11 +1959,9 @@ class LivlineUI:
 
         Hvert 5. sekund det første minut (opstarten er, hvor det går galt),
         derefter hvert halve minut."""
-        # Afspilles der video, skal mpv have skærmen. Vagten kigger igen om
-        # to sekunder i stedet for at slå vinduet frem oven på den.
-        if self._afspiller_koerer():
-            self.root.after(2_000, lambda: self._vindue_vagt(forsoeg))
-            return
+        # Her stod en pause, mens en video havde skærmen. Video vises ikke
+        # længere, og lyd åbner intet vindue — så vagten skal ALDRIG holde
+        # pause. Et vindue foran Livline er nu altid en fejl.
         try:
             self.root.deiconify()
             self.root.attributes("-topmost", True)
@@ -2456,21 +2550,59 @@ class LivlineUI:
     # -- indgående ------------------------------------------------------------
 
     def _poll_inbox(self) -> None:
+        """DENNE LØKKE MÅ ALDRIG KUNNE DØ.
+
+        Den er maskinens hørelse: uden den kommer ingen besked nogensinde
+        på skærmen igen. Og den dør tavst — vinduet står, tasterne virker,
+        rulningen virker. Processen lever, så genstartsvagten opdager
+        ingenting. Maskinen er døv, og den ser rask ud.
+
+        Sådan kunne det ske: en halvt skrevet eller defekt billedfil fik
+        Pillow til at kaste en fejl. Fejlen røg ud af hele funktionen —
+        FØR linjen, der bestiller næste gennemløb. Løkken stoppede for
+        altid efter én ødelagt fil.
+
+        To værn nu: hver besked har sin egen fejlgrænse, så én defekt
+        besked ikke tager resten med sig — og næste gennemløb bestilles i
+        en finally, så det sker, uanset hvad der går galt."""
         try:
             while True:
-                self._modtag_til_skaerm(self.inbox.get_nowait())
-        except queue.Empty:
-            pass
-        # Resultatet af egne afsendelser kommer fra en anden tråd og
-        # behandles HER, hvor vi er i hovedtråden og må røre Tkinter.
-        try:
-            while True:
-                boble, ok = self._svarkoe.get_nowait()
-                self._tegn_sendefejl(boble, ok)
-        except queue.Empty:
-            pass
-        self._refresh_topbar()  # whitelist kan ændres af /tilfoej undervejs
-        self.root.after(300, self._poll_inbox)
+                try:
+                    m = self.inbox.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._modtag_til_skaerm(m)
+                except Exception as e:
+                    # Beskeden er allerede gemt i historikken af _modtag.
+                    # Her er det VISNINGEN, der fejlede — så den skal
+                    # nævnes på skærmen, ikke forsvinde.
+                    log.warning("Kunne ikke vise besked fra %s: %s",
+                                getattr(m, "sender_name", "?"), e)
+                    try:
+                        self._append_system(
+                            f"⚠️ En besked fra "
+                            f"{getattr(m, 'sender_name', 'familien')} "
+                            f"kunne ikke vises")
+                    except Exception:
+                        pass
+            # Resultatet af egne afsendelser kommer fra en anden tråd og
+            # behandles HER, hvor vi er i hovedtråden og må røre Tkinter.
+            try:
+                while True:
+                    boble, ok = self._svarkoe.get_nowait()
+                    self._tegn_sendefejl(boble, ok)
+            except queue.Empty:
+                pass
+            self._refresh_topbar()  # whitelist kan ændres af /tilfoej undervejs
+        except Exception as e:
+            log.warning("Fejl i beskedløkken: %s", e)
+        finally:
+            # UANSET HVAD. Uden denne finally er maskinen døv for altid.
+            try:
+                self.root.after(300, self._poll_inbox)
+            except tk.TclError:
+                pass        # vinduet er lukket — så skal den heller ikke køre
 
     def _modtag_til_skaerm(self, m: Incoming) -> None:
         """Én indgående besked: gem den i samtalen, og vis den — men KUN
@@ -2634,14 +2766,14 @@ class LivlineUI:
                 self._insert("(billede)\n")
             if m.text:
                 self._insert(m.text + "\n")
-        elif m.kind in ("voice", "video"):
+        elif m.kind == "voice":
+            # "video" står stadig i historikken fra ældre versioner og
+            # behandles nu som almindelig tekst. Kun lyd afspilles.
             if replay:
-                self._insert(("🔊  Talebesked" if m.kind == "voice"
-                              else "🎬  Video") + " (modtaget)\n")
+                self._insert("🔊  Talebesked (modtaget)\n")
             else:
-                self._insert(("🔊  Ny talebesked — afspilles…" if m.kind == "voice"
-                              else "🎬  Ny video — afspilles…") + "\n")
-                self._play(m.file_path, fullscreen=(m.kind == "video"))
+                self._insert("🔊  Ny talebesked — afspilles…\n")
+                self._play(m.file_path)
 
         self._rul_til_bund()
         if replay:
@@ -2667,53 +2799,41 @@ class LivlineUI:
         maal(self._accent if times % 2 == 0 else self._bg)
         self.root.after(320, lambda: self._flash(times - 1))
 
-    def _play(self, path: Path, fullscreen: bool) -> None:
-        """Afspiller lyd eller video. Video kræver skærmen for sig selv.
+    def _play(self, path: Path) -> None:
+        """Afspiller en talebesked. KUN lyd — video vises ikke længere.
 
-        SET I DRIFT: skærmen skrev "🎬 Ny video — afspilles…", lyden kom,
-        og der skete ikke noget synligt. Årsagen var to mekanismer, der
-        hver for sig var rigtige: mpv åbnede sit vindue, og vinduesvagten
-        satte Livline -topmost igen inden for fem sekunder. Videoen kørte
-        bag ved. Maskinen påstod altså noget, den ikke gjorde.
+        Video blev fjernet, fordi afspilleren tog både skærmen og
+        tastaturet: mpv binder selv q til "luk" og pilene til at spole.
+        De otte taster på tastaturdækket betød dermed noget andet, så
+        længe en video kørte. En tast, der skifter betydning, er værre
+        end en funktion, der mangler.
 
-        Derfor giver vi slip på "øverst", mens der afspilles — og tager
-        det tilbage, så snart afspilleren er færdig."""
-        cmd = ["mpv", "--really-quiet"]
-        cmd += ["--fs"] if fullscreen else ["--no-video"]
+        Lyd åbner intet vindue og kaprer ingen taster. Derfor er den
+        blevet — og for en, hvis læsning bliver dårligere, er datterens
+        stemme den sidste kanal, der lukker.
+
+        ÉN AD GANGEN. To talebeskeder, der kom få sekunder efter
+        hinanden, startede før hver sin afspiller og talte oven i
+        hinanden. Ingen af dem kunne forstås, og han kunne ikke stoppe
+        nogen af dem."""
+        if self._lyd is not None and self._lyd.poll() is None:
+            log.info("Talebesked sprunget over — der afspilles allerede en")
+            self._append_system("🔊  Endnu en talebesked — afspilles ikke, "
+                                "mens den forrige kører")
+            return
         try:
-            proces = subprocess.Popen(cmd + [str(path)])
+            self._lyd = subprocess.Popen(
+                ["mpv", "--really-quiet", "--no-video",
+                 # Ingen taster til afspilleren. Den har intet vindue, men
+                 # vi siger det eksplicit, så en senere mpv-udgave ikke
+                 # begynder at lytte med.
+                 "--no-input-default-bindings", "--input-conf=/dev/null",
+                 str(path)])
         except FileNotFoundError:
             self._append_system("Kunne ikke afspille — mpv mangler på maskinen.")
-            return
-        if not fullscreen:
-            return                      # lyd behøver ingen skærm
-        self._afspiller = proces
-        self._afspiller_start = time.monotonic()
-        try:
-            self.root.attributes("-topmost", False)
-        except tk.TclError:
-            pass
-
-    def _afspiller_koerer(self) -> bool:
-        """Kører der en video lige nu? Rydder samtidig op efter en, der er
-        slut — og slår en hængende afspiller ihjel efter AFSPIL_MAKS, så
-        skærmen aldrig kan blive låst af noget, ingen kan se."""
-        p = self._afspiller
-        if p is None:
-            return False
-        if p.poll() is not None:
-            self._afspiller = None
-            return False
-        if time.monotonic() - self._afspiller_start > AFSPIL_MAKS:
-            log.warning("Afspilleren har haft skærmen i over %d sek. — stopper den",
-                        AFSPIL_MAKS)
-            try:
-                p.terminate()
-            except Exception:
-                pass
-            self._afspiller = None
-            return False
-        return True
+        except Exception as e:
+            log.warning("Kunne ikke afspille talebesked: %s", e)
+            self._append_system("Kunne ikke afspille talebeskeden.")
 
     def _boble(self, tekst: str, tid: str, afsender: str | None,
                egen: bool = False, farve: str | None = None):
@@ -2994,16 +3114,34 @@ class LivlineUI:
         # går igennem med det samme — det er en ny beslutning, og den må
         # aldrig vente.
         nu_m = time.monotonic()
-        if (reply_text == self._sidste_svar_tekst
-                and nu_m - self._sidste_svar < SVAR_PAUSE_SEK):
+        # To værn, fordi ét ikke var nok.
+        #
+        # Det første fanger en tast, der holdes nede: samme svar igen
+        # inden for få sekunder.
+        #
+        # Det andet kom til, fordi det første kunne omgås af en urolig
+        # hånd: Q, X, Q, X skiftevis er aldrig "samme svar", så alt slap
+        # igennem. Familien fik "Tak, Nej tak, Tak, Nej tak" i en lang
+        # strøm — og for dem ligner det panik, ikke en skælvende finger.
+        #
+        # Ingen sender fire forskellige svar på ti sekunder med vilje.
+        self._svar_tider = [t for t in self._svar_tider
+                            if nu_m - t < SVAR_VINDUE_SEK]
+        ens = (reply_text == self._sidste_svar_tekst
+               and nu_m - self._sidste_svar < SVAR_PAUSE_SEK)
+        for_mange = len(self._svar_tider) >= SVAR_MAKS_I_VINDUE
+        if ens or for_mange:
             if not self._svar_spaerret:
                 self._svar_spaerret = True
-                log.info("Samme svar gentaget inden for %.0f sek. — ignoreret "
-                         "(tast holdt nede?)", SVAR_PAUSE_SEK)
+                log.info("Svar bremset (%s) — tast holdt nede eller urolig hånd?",
+                         "gentaget" if ens else
+                         f"{len(self._svar_tider)} svar på "
+                         f"{SVAR_VINDUE_SEK:.0f} sek.")
             return
         self._svar_spaerret = False
         self._sidste_svar = nu_m
         self._sidste_svar_tekst = reply_text
+        self._svar_tider.append(nu_m)
 
         self._ryd_tom_linje()
         rec = self._recipients()
