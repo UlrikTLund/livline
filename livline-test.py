@@ -1510,9 +1510,13 @@ def _():
         besked(ui, 11, "Mor", "er du vågen?")
         ui.root.update()
         assert "er du vågen" in paa_skaermen(ui), "beskeden kom slet ikke frem"
+        # Hvad ØJET får i stedet for lyden. I fællestråd er det hovedet,
+        # der bærer beskeden: hvad der er sket, og hvornår. Den røde ■
+        # hører til sidelisten, som fællestråd ikke har — derfor skal
+        # hovedet kunne stå alene.
         hoved = ui._top_tekst.cget("text")
-        assert "■" in hoved, \
-            f"ingen lyd OG intet rødt mærke — så siger maskinen intet: {hoved!r}"
+        assert "Ny besked" in hoved and re.search(r"\d\d[.:]\d\d", hoved), \
+            f"ingen lyd OG intet i hovedet — så siger maskinen intet: {hoved!r}"
     finally:
         luk(ui)
 
