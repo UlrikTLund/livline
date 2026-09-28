@@ -2888,6 +2888,70 @@ def _():
         "autologin rettes ikke til kiosk-brugeren"
 
 
+@proev("lysstyrken kan sættes pr. maskine — og fuld styrke er ikke standard-svaret")
+def _():
+    # MÅLT PÅ HARDWARE (maskine 02, T470s, 28.09): 50 % af maksimum var
+    # tydeligt lettere at læse på tre meters afstand end 100 %. Fuldt
+    # baglys vasker det sorte ud, så teksten træder mindre frem — og det
+    # er kontrasten, aldersøjne læser efter, ikke lysmængden.
+    #
+    # To genbrugsskærme er sjældent ens, så det skal kunne sættes pr.
+    # maskine. Men standarden bliver 100, så maskiner i drift ikke ændrer
+    # sig af sig selv ved en opdatering.
+    assert lv.Config.load().lysstyrke == 100, \
+        "standarden er ikke længere 100 — maskiner i drift ville ændre sig"
+
+    # Tallet skal faktisk bruges, når baglyset sættes
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    blok = kilde.split("def _baglys")[1].split("def ")[0]
+    assert "self.config.lysstyrke" in blok, \
+        "lysstyrken læses fra config, men bruges ikke, når lyset sættes"
+    assert "max(1," in blok, \
+        "en lav procent kan slukke skærmen helt om dagen — " \
+        "en maskine, der ser død ud, og som han ikke kan trykke sig ud af"
+
+    # En forkert værdi må ALDRIG falde stille tilbage
+    for daarlig in (0, -5, 200, "halvt", [50], None):
+        v = lv._lysstyrke(daarlig)
+        assert v == 100, f"{daarlig!r} gav {v}, ikke 100"
+    for god in (1, 50, 70, 100):
+        assert lv._lysstyrke(god) == god
+    assert "Ugyldig \"lysstyrke\"" in kilde, \
+        "en forkert lysstyrke siges ikke højt i loggen"
+
+    # Og /indstillinger skal vise det, maskinen FAKTISK bruger
+    assert "Lysstyrke:" in kilde, \
+        "/indstillinger viser ikke lysstyrken — så kan den ikke tjekkes udefra"
+
+
+@proev("ingen anden end Livline må røre lysstyrken")
+def _():
+    # Set på maskine 02 (28.09): skærmen skiftede lysstyrke af sig selv, og
+    # et tastetryk bragte den op igen. Det lignede en dårlig skærm.
+    #
+    # To systemer sloges om den samme fil: GNOME dæmper efter inaktivitet
+    # og skruer op ved næste tast, mens Livlines nattevagt skriver
+    # max_brightness hvert halve minut. En skærm, der skifter af sig selv,
+    # ser i en dement mands stue ud, som om maskinen er ved at gå i stykker
+    # — og han kan ikke spørge nogen om det.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+    for indstilling in ("idle-dim false",
+                        "ambient-enabled false",
+                        "night-light-enabled false"):
+        assert indstilling in kode, \
+            f"{indstilling!r} sættes ikke — skærmen kan stadig ændre sig selv"
+
+    # Og appen skal stadig selv styre baglyset, ellers har vi kun slukket
+    # for den ene af de to.
+    app = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    assert "def _baglys" in app, "appen styrer ikke længere baglyset"
+
+
 @proev("install.sh slår genvejstasterne fra")
 def _():
     sti = pathlib.Path(lv.__file__).parent / "install.sh"

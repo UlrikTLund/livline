@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.79
+VERSION 4.81
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -151,7 +151,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.79"
+VERSION = "4.81"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -159,6 +159,7 @@ KENDTE_FELTER = {
     "whitelist_path", "update_url", "svar", "taster",
     "vis_knapper", "betjening", "autosend", "tema", "farver", "skrift", "fed",
     "sidemargen", "tekstbredde", "bobler", "blink", "stribe", "nat",
+    "lysstyrke",
 }
 REPLAY_IMAGES = 20        # hvor mange billeder der genskabes ved opstart
 # Tk kender danske tegn under engelske navne (keysyms)
@@ -316,6 +317,22 @@ class Config:
     blink: bool = True           # "blink": dæmpet puls ved ny besked
     text_input: bool = False     # udledes af "betjening" (se load)
     nat: tuple = (NAT_START, NAT_SLUT)  # "nat": [sluk-time, tænd-time]
+    lysstyrke: int = 100         # "lysstyrke": baglyset om dagen i procent
+                                 # af panelets maksimum.
+                                 #
+                                 # FULD STYRKE ER IKKE MEST LÆSBART. Målt
+                                 # på maskine 02 (T470s, TN-panel) den
+                                 # 28.09: 50 % var tydeligt lettere at
+                                 # læse på tre meters afstand end 100 %.
+                                 # Fuldt baglys vasker det sorte ud, så
+                                 # teksten træder mindre frem — og det er
+                                 # kontrasten, aldersøjne læser efter, ikke
+                                 # lysmængden.
+                                 #
+                                 # Sættes pr. maskine: to genbrugsskærme
+                                 # er sjældent ens. Standard 100, så
+                                 # maskiner i drift ikke ændrer sig af sig
+                                 # selv ved en opdatering.
     autosend: int = IDLE_RESET_SEC   # "autosend": sek. uden tastetryk før en
                                  # ikke-sendt besked afsendes selv (0 = fra).
                                  # Samme 5 minutter som scroll-til-bunden —
@@ -378,7 +395,29 @@ class Config:
             text_input=(betjening == "tastatur"),
             nat=_nattetider(raw.get("nat")),
             autosend=max(0, int(raw.get("autosend", IDLE_RESET_SEC))),
+            lysstyrke=_lysstyrke(raw.get("lysstyrke")),
         )
+
+
+def _lysstyrke(raw) -> int:
+    """Læser "lysstyrke" i procent og kontrollerer tallet.
+
+    0 ville slukke skærmen helt om dagen — en maskine, der ser død ud, og
+    som brugeren ikke kan trykke sig ud af. Derfor er 1 det laveste, der
+    tages imod, og en fejl siges HØJT i stedet for at falde stille tilbage.
+    """
+    if raw is None:
+        return 100
+    try:
+        v = int(raw)
+    except (TypeError, ValueError) as e:
+        log.warning('Ugyldig "lysstyrke": %r (%s) — bruger 100 %%', raw, e)
+        return 100
+    if not 1 <= v <= 100:
+        log.warning('Ugyldig "lysstyrke": %r (skal være mellem 1 og 100) '
+                    "— bruger 100 %%", raw)
+        return 100
+    return v
 
 
 def _nattetider(raw) -> tuple[int, int]:
@@ -858,6 +897,8 @@ class BotWorker:
             f"Tema: {c.theme}{tema_note}   Skrift: {c.font_size}"
             f"{f' ({SKRIFT_PX} px)' if SKRIFT_PX else ''}"
             f"{'  (fed)' if c.bold else ''}\n"
+            f"Lysstyrke: {c.lysstyrke} %"
+            f"{' (fuld — prøv 50-70 %, hvis teksten er svær at læse)' if c.lysstyrke == 100 else ''}\n"
             f"Administratorer: {len(c.admin_ids)}\n"
             f"Signeret /opdater: "
             f"{'til' if NOEGLE_STI.exists() else 'fra (ingen nøgle)'}")
@@ -2162,7 +2203,10 @@ class LivlineUI:
                 if not maks.exists():
                     continue
                 m = int(maks.read_text().strip())
-                akt.write_text(str(m if vaerdi is None else vaerdi))
+                # Om dagen: den andel af maksimum, config beder om.
+                # Om natten (vaerdi=0): helt slukket.
+                dag = max(1, round(m * self.config.lysstyrke / 100))
+                akt.write_text(str(dag if vaerdi is None else vaerdi))
                 skrevet += 1
             if mapper and not skrevet:
                 raise OSError("ingen af panelerne kunne skrives")

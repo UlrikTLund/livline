@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.79"
+INSTALL_VER="4.81"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -350,6 +350,35 @@ gsettings set org.gnome.settings-daemon.plugins.power \
     sleep-inactive-battery-timeout 0 2>/dev/null || true
 gsettings set org.gnome.settings-daemon.plugins.power \
     power-button-action 'nothing' 2>/dev/null || true
+
+# INGEN ANDEN END LIVLINE MÅ RØRE LYSSTYRKEN.
+#
+# Set på maskine 02 (28.09): skærmen skiftede lysstyrke af sig selv, og
+# et tryk på en tast bragte den op igen. Farverne så skiftevis lyse og
+# udvaskede ud, og det lignede en dårlig skærm.
+#
+# Det var to systemer, der sloges om den samme fil. GNOME dæmper skærmen
+# efter et stykke tid uden aktivitet (idle-dim) og skruer op igen ved
+# næste tastetryk. Livlines egen nattevagt skriver max_brightness hvert
+# halve minut. Resultatet: lyset går op og ned hele dagen.
+#
+# I en stue hos en mand med demens er en skærm, der skifter af sig selv,
+# ikke en skønhedsfejl. Den ser ud, som om maskinen er ved at gå i stykker
+# — og han kan ikke spørge nogen om det.
+#
+# ambient-enabled er lyssensoren: T470s har en, og med den tændt følger
+# lysstyrken rummets lys. Samme problem, anden årsag.
+#
+# night-light skifter farvetemperaturen om aftenen. Skærmen bliver varmere
+# og gulere efter et klokkeslæt, vi ikke selv bestemmer — og Livline har
+# allerede sin egen nattetilstand.
+gsettings set org.gnome.settings-daemon.plugins.power \
+    idle-dim false 2>/dev/null || true
+gsettings set org.gnome.settings-daemon.plugins.power \
+    ambient-enabled false 2>/dev/null || true
+gsettings set org.gnome.settings-daemon.plugins.color \
+    night-light-enabled false 2>/dev/null || true
+
 gsettings set org.gnome.desktop.notifications show-banners false 2>/dev/null || true
 # GENVEJSTASTERNE SLÅS FRA. Set på hardware: et tryk på Windows-tasten
 # åbner GNOME's aktivitetsoversigt, og så står skrivebordet foran appen.
