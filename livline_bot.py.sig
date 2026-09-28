@@ -1,1 +1,2 @@
-MEYCIQCwNSIr9Sgiba62BNxTntGXS864ioQVg8kYAvbmOW+efAIhAJ5ijj37j7xRuuf+hheUZ4i7s/KAh95oz6MPgqm4zLLm
+.sig.raw && cat livline_bot.py.sig; echo
+MEUCIQCJO1PbrMLxGc+frkQFkAptyoD7FR8/P9dh6bFaxOJjpgIgSj0dVdgsAsnFugIMWXTR6+L0EOEneSnOstaqvkMSTV4=
