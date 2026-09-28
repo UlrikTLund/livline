@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.76"
+INSTALL_VER="4.77"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -58,6 +58,41 @@ MODE=${MODE:-faellestraad}
     echo "FEJL: tilstand skal være faellestraad eller enkelte."; exit 1; }
 read -rp "Update-URL til /opdater (enter = slået fra): " UPDATE_URL
 UPDATE_URL=${UPDATE_URL:-}
+
+# NØDNETTET. Det net, maskinen kan finde, når familiens eget er væk, og du
+# står i stuen med telefonen som hotspot. Uden det skal der kabel eller
+# tastatur til — og tastaturet ligger under et stykke papir.
+#
+# Navn og kode står IKKE i scriptet, selv om det ville være nemmere. Filen
+# her ligger i et offentligt repo: enhver kunne så lave et net med samme
+# navn og kode i nærheden af maskinen, og maskinen ville koble sig på det
+# af sig selv. Du taster dem i stedet — det er dit eget nødnet, og du
+# kender det udenad.
+#
+# ENTER SPRINGER OVER. En maskine uden nødnet er bedre end en installation,
+# der går i stå, fordi nogen ikke kunne huske koden.
+echo
+echo "Nødnet (valgfrit): det net, maskinen tager, når familiens er væk."
+echo "Typisk din telefons hotspot. Tryk blot Enter for at springe over."
+read -rp "  Navn på nødnettet (enter = intet): " NOEDNET
+NOEDPSK=""
+if [[ -n "$NOEDNET" ]]; then
+    read -rsp "  Kode til \"$NOEDNET\" (mindst 8 tegn): " NOEDPSK; echo
+    if [[ ${#NOEDPSK} -lt 8 ]]; then
+        echo "  FEJL: koden skal være mindst 8 tegn. Nødnettet springes over."
+        NOEDNET=""; NOEDPSK=""
+    else
+        # Tastes to gange. Koden kan ikke ses, mens den skrives, og en
+        # tastefejl ville først vise sig den dag, maskinen skulle bruge
+        # nettet — altså netop når intet andet virker.
+        read -rsp "  Skriv den igen: " NOEDPSK2; echo
+        if [[ "$NOEDPSK" != "$NOEDPSK2" ]]; then
+            echo "  FEJL: de to koder er ikke ens. Nødnettet springes over."
+            NOEDNET=""; NOEDPSK=""
+        fi
+        NOEDPSK2=""
+    fi
+fi
 # Kiosk-bruger: SKAL være den bruger, den grafiske session logger ind som,
 # ellers starter appen aldrig. Vi foreslår derfor den bruger, GDM allerede
 # har autologin på (typisk den, du oprettede under Ubuntu-installationen),
@@ -671,6 +706,39 @@ echo "   sudo nmcli connection up \"$SSID\""
 WIFIEOF
 chmod 755 /usr/local/bin/livline-wifi
 echo "   livline-wifi lagt på maskinen ✔"
+
+if [[ -n "$NOEDNET" ]]; then
+    echo "-- Nødnet: $NOEDNET..."
+    # LAVEST MULIG PRIORITET. Nødnettet må ALDRIG vinde over familiens
+    # eget net. Gjorde det det, kunne maskinen finde på at skifte, mens
+    # alt virkede — og det kostede os fjernforbindelsen to gange i sidste
+    # uge. Negativ autoconnect-priority betyder: tages kun, når intet
+    # andet er at finde.
+    #
+    # Der kobles ikke på nu. Samme regel som livline-wifi: et skift af net
+    # midt i en installation river SSH-forbindelsen væk.
+    if nmcli -g NAME connection show 2>/dev/null | grep -qxF "$NOEDNET"; then
+        nmcli connection modify "$NOEDNET" \
+            wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$NOEDPSK" || true
+    else
+        nmcli connection add type wifi con-name "$NOEDNET" ssid "$NOEDNET" \
+            wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$NOEDPSK" || true
+    fi
+    nmcli connection modify "$NOEDNET" connection.autoconnect yes \
+        connection.autoconnect-priority -100 || true
+    NOEDPSK=""
+    # Kontrollér, at den faktisk ligger der. En installation, der SIGER
+    # "nødnet lagt ind", men ikke gjorde det, er værre end ingenting:
+    # så regner du med det den dag, du står i stuen.
+    if nmcli -g NAME connection show 2>/dev/null | grep -qxF "$NOEDNET"; then
+        echo "   nødnettet \"$NOEDNET\" lagt ind (laveste prioritet) ✔"
+    else
+        echo "   ADVARSEL: nødnettet kunne IKKE lægges ind. Læg det ind"
+        echo "   manuelt med: livline-wifi \"$NOEDNET\""
+    fi
+else
+    echo "-- Nødnet: sprunget over. Læg det ind senere med livline-wifi."
+fi
 
 echo "-- livline-vis: skift mellem de tre opsætninger..."
 # Bruges ved levering: prøv alle tre med den ældre siddende foran, og vælg

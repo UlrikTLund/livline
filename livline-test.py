@@ -3011,6 +3011,55 @@ def _():
         "for kort kode giver nmcli's uforståelige 'psk: property is invalid'"
 
 
+@proev("nødnettet lægges ind ved installationen — og kan springes over")
+def _():
+    # Alt, der skal gøres "bagefter", bliver glemt på maskine 07. Nødnettet
+    # er det net, maskinen kan finde, når familiens eget er væk, og du står
+    # i stuen med telefonen som hotspot. Uden det skal der kabel eller
+    # tastatur til — og tastaturet ligger under et stykke papir.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+
+    assert "NOEDNET" in kode, "installationen spørger slet ikke om et nødnet"
+    assert "enter = intet" in kode, \
+        "spørgsmålet kan ikke springes over — en installation må aldrig " \
+        "gå i stå, fordi nogen ikke kan huske en kode"
+
+    blok = kode.split('if [[ -n "$NOEDNET" ]]; then')[-1]
+
+    # LAVEST MULIG PRIORITET. Nødnettet må aldrig vinde over familiens eget
+    # net: så kunne maskinen finde på at skifte, mens alt virkede. Det
+    # kostede fjernforbindelsen to gange i sidste uge.
+    assert "autoconnect-priority -100" in blok, \
+        "nødnettet kan vinde over familiens net og flytte maskinen i utide"
+    assert "device wifi connect" not in blok, \
+        "der kobles på med det samme — det river fjernforbindelsen væk"
+
+    # Navn og kode må ALDRIG stå skrevet i filen. install.sh ligger i et
+    # offentligt repo: så kunne enhver lave et net med samme navn og kode
+    # i nærheden af maskinen, og maskinen ville koble sig på det selv.
+    assert 'wifi-sec.psk "$NOEDPSK"' in blok, \
+        "koden kommer ikke fra et spørgsmål — står den i filen, er den offentlig"
+    assert "livline-hjaelp" not in kode, \
+        "nødnettets navn står skrevet i en fil, alle kan læse"
+
+    # Koden tastes skjult og to gange — samme grund som i livline-wifi.
+    spg = kode.split("Navn på nødnettet")[1].split("fi\n")[0]
+    assert spg.count("read -rsp") >= 2, \
+        "koden tastes kun én gang — en tastefejl opdages først i stuen"
+    assert "mindst 8 tegn" in spg, "for kort kode fanges ikke"
+
+    # Og den skal KONTROLLERE, at nettet faktisk kom ind. En installation,
+    # der siger "nødnet lagt ind" uden at have gjort det, er værre end
+    # ingenting: så regner du med det den dag, du står i stuen.
+    assert "ADVARSEL" in blok and "IKKE lægges ind" in blok, \
+        "installationen melder ikke fra, hvis nødnettet ikke kom ind"
+
+
 @proev("install.sh lægger livline-vis på maskinen")
 def _():
     sti = pathlib.Path(lv.__file__).parent / "install.sh"
