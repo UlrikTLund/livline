@@ -3293,6 +3293,48 @@ def _():
     assert "Intet ændret." in blok, \
         "Enter uden valg siger ikke, at der ikke skete noget"
 
+    # ET WIFI-NAVN KAN HØJST VÆRE 32 TEGN — en grænse i standarden.
+    # Set 01.10: en indsætning med mere end én linje endte i svarfeltet, og
+    # kommandoen spurgte pænt om koden til et "net", der var en hel
+    # kommandolinje. Uden tjekket ville et Enter have oprettet den.
+    assert "> 32" in blok and "højst være 32" in blok, \
+        "et umuligt langt netnavn tages imod — en fejlindsætning bliver " \
+        "til en forbindelse"
+
+    # ET KENDT NET MÅ IKKE FÅ SIN KODE OVERSKREVET VED ET UHELD.
+    # Vælger man et net fra listen for at se, hvad der sker, gik
+    # kommandoen før direkte til kodefeltet. En tastefejl dér ødelægger en
+    # kode, der virker — og fejlen viser sig først, næste gang maskinen
+    # skal bruge nettet.
+    assert "kender maskinen allerede" in blok, \
+        "et kendt net fører direkte til kodefeltet"
+
+    # SKIFT PÅ AFSTAND — MED EN SNOR I.
+    # Familien skifter router om to år. Uden det skal der køres derud.
+    # Men et netskifte river fjernforbindelsen væk i samme sekund, og
+    # virker det nye net ikke, er maskinen uden for rækkevidde.
+    assert "--skift" in blok, "man kan ikke skifte net på afstand"
+    assert "--behold" in blok, "en fortrydelse kan ikke aflyses"
+    skift = blok.split('"$1" == "--skift"')[1].split("\nfi\n")[0]
+    assert "systemd-run" in skift and "--on-active=300" in skift, \
+        "der bestilles ingen fortrydelse — maskinen kan låse sig selv ude"
+    # Fortrydelsen skal bestilles FØR der skiftes. Omvendt rækkefølge
+    # ville efterlade et hul, hvor maskinen er væk og intet kommer tilbage.
+    #
+    # KUN KOMMANDOER TÆLLER. Første udgave af denne prøve fandt teksten
+    # "nmcli connection up" inde i en echo-linje — fejlbeskeden, der
+    # foreslår kommandoen i hånden — og troede, det var selve skiftet.
+    # Tredje gang i projektet, at en prøve læser sin egen hjælpetekst.
+    skift_kode = "\n".join(l for l in skift.splitlines()
+                           if not l.lstrip().startswith(("#", "echo")))
+    assert skift_kode.index("systemd-run") < skift_kode.index("nmcli connection up"), \
+        "der skiftes, FØR fortrydelsen er bestilt"
+    assert "kunne ikke bestille en fortrydelse" in skift, \
+        "fejler bestillingen, skiftes der alligevel"
+    # Og man skal ikke kunne skifte til et net, maskinen ikke kender
+    assert "er ikke lagt ind endnu" in skift, \
+        "man kan skifte til et net uden kode — maskinen ender uden net"
+
 
 @proev("/opdater kan ikke tændes uden en nøgle at kontrollere med")
 def _():

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.87"
+INSTALL_VER="4.89"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -937,6 +937,64 @@ vis_gemte() {
         | awk -F: '$2=="802-11-wireless"{print "   " $1}'
 }
 
+# SKIFT NET PÅ AFSTAND — MED EN SNOR I.
+#
+# Familien skifter router om to år. Uden det her skal du køre derud.
+#
+# Men et netskifte river fjernforbindelsen væk i samme sekund, og virker
+# det nye net ikke, er maskinen uden for rækkevidde. Derfor bestilles en
+# FORTRYDELSE, før der skiftes: om fem minutter sætter maskinen sig selv
+# tilbage på det gamle net, medmindre du når at sige, at det nye virker.
+#
+# Samme regel som alt andet her: du må ikke kunne låse dig selv ude.
+if [[ $# -ge 1 && "$1" == "--behold" ]]; then
+    if systemctl stop livline-fortryd.timer 2>/dev/null; then
+        echo "Fortrydelsen er aflyst. Maskinen bliver på det net, den står på."
+    else
+        echo "Der var ingen fortrydelse at aflyse — intet ændret."
+    fi
+    exit 0
+fi
+
+if [[ $# -ge 1 && "$1" == "--skift" ]]; then
+    [[ $# -ge 2 ]] || { echo "Brug: sudo livline-wifi --skift \"navn\""; exit 1; }
+    NYT="$2"
+    if ! nmcli -g NAME connection show 2>/dev/null | grep -qxF "$NYT"; then
+        echo "FEJL: \"$NYT\" er ikke lagt ind endnu."
+        echo "      Læg det ind først med: sudo livline-wifi"
+        exit 1
+    fi
+    GAMMELT=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+              | awk -F: '$2=="802-11-wireless"{print $1; exit}')
+    if [[ -z "$GAMMELT" ]]; then
+        echo "FEJL: maskinen står ikke på et WiFi lige nu — kan ikke fortryde."
+        echo "      Skift i stedet med: nmcli connection up \"$NYT\""
+        exit 1
+    fi
+    if [[ "$GAMMELT" == "$NYT" ]]; then
+        echo "Maskinen står allerede på \"$NYT\". Intet ændret."
+        exit 0
+    fi
+    systemctl stop livline-fortryd.timer 2>/dev/null || true
+    if ! systemd-run --unit=livline-fortryd --on-active=300 \
+         --description="Livline: sætter nettet tilbage, hvis skiftet ikke virkede" \
+         nmcli connection up "$GAMMELT" >/dev/null 2>&1; then
+        echo "FEJL: kunne ikke bestille en fortrydelse. Skifter IKKE."
+        echo "      Uden den kan maskinen ende uden for rækkevidde."
+        exit 1
+    fi
+    echo "Fortrydelse bestilt: om 5 minutter går maskinen tilbage til"
+    echo "\"$GAMMELT\", medmindre du siger til."
+    echo
+    echo "Skifter nu til \"$NYT\" — forbindelsen ryger et øjeblik."
+    echo
+    echo "VIRKER DET? Så log ind igen og kør:"
+    echo "   sudo livline-wifi --behold"
+    echo
+    nmcli connection up "$NYT" || true
+    exit 0
+fi
+
 if [[ $# -ge 1 && "$1" == "--glem" ]]; then
     [[ $# -ge 2 ]] || { echo "Brug: sudo livline-wifi --glem \"navn\""; exit 1; }
     nmcli connection delete "$2" && echo "Fjernet: $2"
@@ -991,6 +1049,24 @@ else
     fi
 fi
 
+# ET WIFI-NAVN KAN HØJST VÆRE 32 TEGN. Det er en grænse i standarden, og
+# den er gratis at kontrollere.
+#
+# Set 01.10: en indsætning, der indeholdt mere end den ene linje, endte i
+# svarfeltet — og kommandoen begyndte pænt at spørge om koden til et
+# "net", der i virkeligheden var en hel kommandolinje. Uden det her tjek
+# ville et Enter have oprettet en forbindelse med det navn.
+if (( ${#SSID} > 32 )); then
+    echo "FEJL: \"${SSID:0:40}…\""
+    echo "      Det er ${#SSID} tegn. Et WiFi-navn kan højst være 32."
+    echo "      Kom der mere end én linje med, da du satte ind? Prøv igen."
+    exit 1
+fi
+if [[ -z "${SSID// }" ]]; then
+    echo "FEJL: tomt netværksnavn. Intet ændret."
+    exit 1
+fi
+
 # KOBL ALDRIG PÅ MED DET SAMME.
 #
 # Her stod før en gren, der brugte "nmcli --ask device wifi connect", når
@@ -1005,6 +1081,24 @@ fi
 # Nu gør kommandoen kun ÉN ting: den lægger nettet ind. Maskinen kobler
 # sig selv på, når nettet er det bedste, den kan se — og hos familien er
 # det det eneste, der findes.
+# KENDES NETTET I FORVEJEN? Så spørg, før koden overskrives.
+#
+# Vælger man et net fra listen for at se, hvad der sker, gik kommandoen
+# før direkte videre til kodefeltet — som om man ville ændre den. En
+# tastefejl dér overskriver en kode, der virker, og fejlen viser sig
+# først næste gang maskinen skal bruge nettet.
+if nmcli -g NAME connection show 2>/dev/null | grep -qxF "$SSID"; then
+    echo "\"$SSID\" kender maskinen allerede."
+    read -rp "Vil du opdatere koden? [j/N]: " OPDAT
+    if [[ ! "$OPDAT" =~ ^[jJyY]$ ]]; then
+        echo "Intet ændret."
+        echo
+        echo "Vil du have maskinen til at SKIFTE til nettet nu:"
+        echo "   sudo livline-wifi --skift \"$SSID\""
+        exit 0
+    fi
+fi
+
 K1="$(laes_kode "Kode til \"$SSID\" (tom = åbent net): ")"
 K2=""
 if [[ -n "$K1" ]]; then
