@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.81
+VERSION 4.87
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -151,7 +151,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.81"
+VERSION = "4.87"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -161,6 +161,11 @@ KENDTE_FELTER = {
     "sidemargen", "tekstbredde", "bobler", "blink", "stribe", "nat",
     "lysstyrke",
 }
+NET_TJEK_SEK = 30         # hvor ofte netvagten prøver at nå Telegram
+NET_STILLE_SEK = 180      # hvor længe uden kontakt, før skærmen siger til.
+                          # Tre minutter, fordi et kort udfald ikke skal
+                          # sætte en advarsel op: en linje, der kommer og
+                          # går hele dagen, holder man op med at læse.
 REPLAY_IMAGES = 20        # hvor mange billeder der genskabes ved opstart
 # Tk kender danske tegn under engelske navne (keysyms)
 KEYSYM = {"æ": "ae", "ø": "oslash", "å": "aring",
@@ -558,9 +563,53 @@ class BotWorker:
         self._notified_unknown: set[int] = set()  # undgå admin-spam
         self._afventer: dict[int, str] = {}       # chat_id -> navn, venter på godkendelse
         self._send_fejl: set[int] = set()         # hvem vi har meldt som uopnåelig
+        # Netvagten. Tidspunktet for sidste bekræftede kontakt med Telegram.
+        # Sat til "nu" ved opstart, så skærmen ikke råber, før vagten har
+        # nået at prøve første gang.
+        self.sidste_net_ok: float = time.monotonic()
+        self.net_vaek_siden: float | None = None   # sat, når udfaldet begyndte
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="bot", daemon=True).start()
+        threading.Thread(target=self._netvagt, name="netvagt",
+                         daemon=True).start()
+
+    def _netvagt(self) -> None:
+        """Holder øje med, om Telegram overhovedet kan nås.
+
+        HVORFOR DEN FINDES: er nettet væk, ser skærmen præcis ud som en
+        skærm, hvor familien ikke har skrevet. Den ældre kan ikke se
+        forskel — og familien kan heller ikke, for deres beskeder ser
+        afsendte ud i Telegram.
+        
+        Set i virkeligheden (29.09): Ulrik var hos sine forældre på et
+        andet net og undrede sig over, at maskinen ikke virkede. Han har
+        bygget den. Erland ville aldrig kunne gennemskue det.
+        
+        Vagten står for sig selv og spørger ikke python-telegram-bot om
+        noget: den åbner en forbindelse til api.telegram.org og lukker
+        den igen. Så virker den også, mens bot-laget er ved at genstarte
+        sig selv efter en fejl."""
+        while True:
+            try:
+                s = socket.create_connection(("api.telegram.org", 443),
+                                             timeout=5)
+                s.close()
+                if self.net_vaek_siden is not None:
+                    vaek = time.monotonic() - self.net_vaek_siden
+                    log.info("Forbindelsen er tilbage efter %d min %d sek",
+                             int(vaek // 60), int(vaek % 60))
+                    self.net_vaek_siden = None
+                self.sidste_net_ok = time.monotonic()
+            except OSError as e:
+                if self.net_vaek_siden is None:
+                    self.net_vaek_siden = time.monotonic()
+                    log.warning("Ingen forbindelse til Telegram: %s", e)
+            time.sleep(NET_TJEK_SEK)
+
+    def net_nede_sek(self) -> float:
+        """Hvor længe der har været stille. 0 betyder: forbindelsen er i orden."""
+        return max(0.0, time.monotonic() - self.sidste_net_ok)
 
     def _run(self) -> None:
         # ROBUSTHED: crash-exit uden netværk ville udløse run.sh's
@@ -759,6 +808,17 @@ class BotWorker:
                   f"Oppetid: {d} d {h} t {m} min",
                   f"Disk: {du.free / 1e9:.1f} GB fri af {du.total / 1e9:.1f} GB",
                   f"Whitelist: {len(self.whitelist)} personer"]
+        # FORBINDELSEN. Står /status til at svare, er den i orden lige nu —
+        # men et udfald, der lige er overstået, er værd at kende: det
+        # forklarer beskeder, der kom for sent, og en tavs formiddag.
+        nede = self.net_nede_sek()
+        if nede > NET_STILLE_SEK:
+            linjer.append(f"⚠️ Ingen forbindelse i {int(nede // 60)} min "
+                          f"— skærmen siger det selv")
+        elif self.net_vaek_siden is not None:
+            linjer.append("⚠️ Forbindelsen er ustabil lige nu")
+        else:
+            linjer.append("Forbindelse: i orden")
         # Hvor længe siden familien sidst skrev. Teknisk drift kan være
         # perfekt, mens brugen falder — og tavshed er det første tegn på,
         # at en maskine er ved at blive overflødig.
@@ -1583,6 +1643,23 @@ class LivlineUI:
         self._top_tegn = tk.Label(self._top_midte, bg=BG, fg=self._top,
                                   font=FONT_BAR, padx=12)
         self._top_tegn.pack(side="left")
+
+        # NETLINJEN. Kun på skærmen, når der er noget galt.
+        #
+        # Er nettet væk, ser skærmen præcis ud som en skærm, hvor familien
+        # ikke har skrevet. Den ældre kan ikke se forskel, og familien kan
+        # heller ikke: deres beskeder ser afsendte ud i Telegram.
+        #
+        # Linjen står FOR SIG, ikke i stedet for hovedet. "Ny besked" er
+        # en oplysning, der ikke må forsvinde, fordi der kommer en anden.
+        #
+        # Den beder ham ikke om at gøre noget. Han kan ikke rette det, og
+        # en linje, der antyder, at han burde, er værre end ingen linje.
+        self._netlinje = tk.Label(
+            self.root, bg=BG, fg=FARVE_NY, font=FONT_BAR, pady=6,
+            text="⚠️  Ingen forbindelse — beskeder kommer frem, "
+                 "når den er tilbage")
+        self._net_vist = False
 
         # VIGTIGT: bundbaren pakkes FØR beskedfeltet, så knapperne altid har
         # reserveret plads. Ellers kan beskedfeltet (expand=True) skubbe dem
@@ -2696,6 +2773,7 @@ class LivlineUI:
             except queue.Empty:
                 pass
             self._refresh_topbar()  # whitelist kan ændres af /tilfoej undervejs
+            self._vis_netstatus()
         except Exception as e:
             log.warning("Fejl i beskedløkken: %s", e)
         finally:
@@ -2704,6 +2782,27 @@ class LivlineUI:
                 self.root.after(300, self._poll_inbox)
             except tk.TclError:
                 pass        # vinduet er lukket — så skal den heller ikke køre
+
+    def _vis_netstatus(self) -> None:
+        """Sætter netlinjen på skærmen, når Telegram ikke har kunnet nås.
+
+        Pakkes kun om, når tilstanden SKIFTER. Et pack/pack_forget i hver
+        runde ville få hele skærmen til at hoppe fire gange i sekundet."""
+        try:
+            nede = self.bot.net_nede_sek() > NET_STILLE_SEK
+        except Exception:
+            return              # botten er ikke klar endnu — ikke en fejl
+        if nede == self._net_vist:
+            return
+        self._net_vist = nede
+        if nede:
+            # Lige under hovedet, før alt andet i den øvrige stak.
+            self._netlinje.pack(after=self.topbar, fill="x")
+            log.warning("Netlinjen er sat på skærmen — ingen kontakt i %d sek",
+                        int(self.bot.net_nede_sek()))
+        else:
+            self._netlinje.pack_forget()
+            log.info("Netlinjen er væk igen — forbindelsen er tilbage")
 
     def _modtag_til_skaerm(self, m: Incoming) -> None:
         """Én indgående besked: gem den i samtalen, og vis den — men KUN

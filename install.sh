@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.81"
+INSTALL_VER="4.87"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -333,6 +333,21 @@ logger -t livline "Skrivebordet er klar — starter Livline"
 # Kiosk-indstillinger (kører i den grafiske session — virker på Wayland)
 gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null || true
+# SKÆRMEN MÅ ALDRIG BLIVE SORT MIDT PÅ DAGEN.
+#
+# idle-delay 0 ovenfor slår sessionens uvirksomheds-ur fra, men
+# pauseskærmen har sin EGEN kontakt — og den stod tændt. Set på maskine
+# 02 hos Ulriks mor (01.10): skærmen tændte pænt kl. 8 og blev sort igen
+# omkring kl. 8.12. Appens log frikendte den: "Nattilstand: skærmen
+# tændt" kl. 08.00.10 og intet derefter.
+#
+# Hvorfor det er værre, end det lyder: han kan ikke vide, at skærmen
+# skal vækkes. Og trykker han på en tast for at se, om maskinen lever,
+# er det ÉN AF DE FEM SVARTASTER — så får familien et "Tak" ud af
+# ingenting. En sort skærm er ikke bare en sort skærm her; den kan sende
+# en besked, ingen har ment.
+gsettings set org.gnome.desktop.screensaver idle-activation-enabled false \
+    2>/dev/null || true
 gsettings set org.gnome.settings-daemon.plugins.power \
     sleep-inactive-ac-type 'nothing' 2>/dev/null || true
 # ... OG på batteri. Set i drift: da strømmen blev taget for at afprøve
@@ -532,6 +547,126 @@ else
     echo "Uden autologin står skærmen på login-billedet efter genstart, og"
     echo "Livline starter aldrig. Er GDM installeret? (Ubuntu Desktop, ikke Server)"
     exit 1
+fi
+
+echo "-- Skærmen må ikke blinke: Intels panel self-refresh slås fra..."
+# SET PÅ MASKINE 02 (28.09), DAGEN FØR DEN SKULLE LEVERES.
+#
+# Skærmen blev kortvarigt mørk med tilfældige mellemrum. Panel self-refresh
+# lader panelet genbruge sit eget billede for at spare strøm, og på flere
+# Intel-paneler giver det korte udfald.
+#
+# På en maskine, der altid står i stikket, sparer den ingenting af værdi.
+# Og i en stue er en skærm, der blinker, ikke en skønhedsfejl: den ser ud
+# som en maskine på vej i stykker. Familien kan ikke vurdere det, og en
+# mand med demens kan slet ikke. Han kan bare se, at noget er galt.
+#
+# Kun hvis den ikke står der i forvejen — scriptet skal kunne køres igen.
+if ! grep -q "i915.enable_psr=0" /etc/default/grub 2>/dev/null; then
+    sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)"/\1 i915.enable_psr=0"/' \
+        /etc/default/grub
+    if grep -q "i915.enable_psr=0" /etc/default/grub; then
+        update-grub >/dev/null 2>&1 \
+            && echo "   panel self-refresh slået fra (virker efter genstart) ✔" \
+            || echo "   ADVARSEL: update-grub fejlede — skærmen kan stadig blinke"
+    else
+        echo "   ADVARSEL: kunne ikke skrive i /etc/default/grub."
+        echo "   Blinker skærmen, så tilføj i915.enable_psr=0 til"
+        echo "   GRUB_CMDLINE_LINUX_DEFAULT og kør update-grub."
+    fi
+else
+    echo "   panel self-refresh var allerede slået fra ✔"
+fi
+
+echo "-- Ladegrænse: batteriet er maskinens nødstrøm og skal holde i årevis..."
+# MASKINEN STÅR I STIKKONTAKTEN DØGNET RUNDT, ÅRET RUNDT.
+#
+# Et litium-batteri, der holdes på 100 %, slides markant hurtigere end et,
+# der holdes omkring 80. Og batteriet er ikke en bekvemmelighed her — det
+# er det eneste, der holder Livline i live, når strømmen går i en stue.
+#
+# Målt på to maskiner efter nogle måneder i stikket: 01 er nede på 66 %
+# af oprindelig kapacitet, 02 på 78 %. De tal falder videre, så længe de
+# lader til fuld.
+#
+# 80 % af et sundt batteri er mere værd end 100 % af et slidt.
+#
+# IKKE TLP. Det er en hel strømstyringspakke, der også bestemmer over
+# WiFi-strømsparing, USB og diske — og dem har vi allerede sat selv. To
+# systemer, der styrer det samme, er præcis det, der kostede en dag på
+# lysstyrken. Kernen kan sætte grænsen direkte; det er ét tal i én fil.
+install -d -o root -g root -m 755 /usr/local/libexec/livline
+cat > /usr/local/libexec/livline/batterigraense.sh <<'BATEOF'
+#!/usr/bin/env bash
+# Sætter ladegrænsen igen ved hver opstart — værdierne overlever ikke
+# en genstart af sig selv.
+START=75
+SLUT=80
+fundet=0
+for b in /sys/class/power_supply/BAT*; do
+    [ -e "$b/charge_control_end_threshold" ] || continue
+    # SLUT skrives FØRST. Flere ThinkPad-firmwares afviser en start-værdi,
+    # der ligger over den nuværende slut-værdi.
+    if echo "$SLUT" > "$b/charge_control_end_threshold" 2>/dev/null; then
+        fundet=1
+        if [ -e "$b/charge_control_start_threshold" ]; then
+            echo "$START" > "$b/charge_control_start_threshold" 2>/dev/null || true
+        fi
+        logger -t livline "Ladegrænse sat på $(basename "$b"): $START-$SLUT %"
+    fi
+done
+if [ "$fundet" -eq 0 ]; then
+    # IKKE EN FEJL, MEN DET SKAL SIGES. Maskinen virker fint uden; den
+    # slider bare batteriet hurtigere. En tavs manglende funktion ville
+    # først vise sig som et dødt batteri om to år.
+    logger -t livline "ADVARSEL: maskinen understøtter ikke ladegrænse — batteriet lader til 100 %"
+fi
+# SLUT MED 0, UANSET HVAD.
+#
+# Første udgave sluttede med  [ "$fundet" -eq 0 ] && logger ...
+# Lykkedes alt, var testen falsk, linjen returnerede 1, og det var
+# scriptets sidste kommando — så systemd meldte, at tjenesten FEJLEDE,
+# mens ladegrænsen stod helt rigtigt på 80.
+#
+# Det er den værste slags: en tjeneste, der ser defekt ud, mens den gør
+# sit arbejde. Kigger man på en maskine og ser rødt på noget, der virker,
+# holder man op med at tro på de røde ting.
+exit 0
+BATEOF
+chown root:root /usr/local/libexec/livline/batterigraense.sh
+chmod 755 /usr/local/libexec/livline/batterigraense.sh
+
+cat > /etc/systemd/system/livline-batteri.service <<'EOF'
+[Unit]
+Description=Livline: ladegraense, saa batteriet holder i aarevis
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/livline/batterigraense.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now livline-batteri.service >/dev/null 2>&1 || true
+# Kontrollér at det FAKTISK blev sat. En grænse, der er skrevet i en fil,
+# men aldrig nåede hardwaren, ser ud som om problemet var løst.
+BATGR=""
+for b in /sys/class/power_supply/BAT*; do
+    [ -e "$b/charge_control_end_threshold" ] || continue
+    BATGR=$(cat "$b/charge_control_end_threshold" 2>/dev/null || true)
+    break
+done
+if [[ "$BATGR" == "80" ]]; then
+    echo "   ladegrænse sat til 75-80 % ✔"
+elif [[ -z "$BATGR" ]]; then
+    echo "   maskinen understøtter ikke ladegrænse — batteriet lader til 100 %."
+    echo "   Ikke en fejl, men batteriet slides hurtigere. Noter det på maskinen."
+else
+    echo "   ADVARSEL: ladegrænsen står på $BATGR, ikke 80. Undersøg med:"
+    echo "   systemctl status livline-batteri.service"
 fi
 
 echo "-- Låg-lukning: maskinen kører videre (aldrig offline)..."
@@ -769,27 +904,92 @@ set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then echo "Kør med sudo."; exit 1; fi
 
-if [[ $# -eq 0 ]]; then
+# ---------------------------------------------------------------- kodefelt
+# EN PROMPT, DER IKKE VISER NOGET, LIGNER EN MASKINE, DER HAR HÆNGT SIG.
+#
+# Prøvet på maskine 02 med et USB-tastatur (29.09): "read -rsp" viser
+# intet overhovedet — ikke engang at markøren flytter sig. Man taster en
+# lang kode ud i ingenting og trykker Enter for at se, om maskinen lever.
+# I en fremmed stue, med nogen der kigger, er det ikke rart.
+#
+# Nu kommer der en stjerne pr. tegn. Koden kan stadig ikke læses over
+# skulderen, men man kan SE, at maskinen tager imod. Backspace virker.
+laes_kode() {
+    local svar="" tegn
+    printf '%s' "$1" >&2
+    while IFS= read -rsn1 tegn; do
+        [[ -z "$tegn" ]] && break                 # Enter
+        if [[ "$tegn" == $'\177' || "$tegn" == $'\b' ]]; then
+            if [[ -n "$svar" ]]; then
+                svar="${svar%?}"; printf '\b \b' >&2
+            fi
+        else
+            svar+="$tegn"; printf '*' >&2
+        fi
+    done
+    printf '\n' >&2
+    printf '%s' "$svar"
+}
+
+vis_gemte() {
     echo "Gemte net (maskinen vælger selv det, der er i nærheden):"
     nmcli -g NAME,TYPE connection show 2>/dev/null \
         | awk -F: '$2=="802-11-wireless"{print "   " $1}'
-    echo
-    echo "Net i nærheden lige nu:"
-    nmcli -t -f SSID,SIGNAL device wifi list 2>/dev/null \
-        | awk -F: 'NF && $1 != "" {print "   " $1 "  (" $2 "%)"}' | sort -u
-    echo
-    echo "Læg et nyt ind:   sudo livline-wifi \"Netværkets navn\""
-    echo "Fjern et igen:    sudo livline-wifi --glem \"Netværkets navn\""
-    exit 0
-fi
+}
 
-if [[ "$1" == "--glem" ]]; then
+if [[ $# -ge 1 && "$1" == "--glem" ]]; then
     [[ $# -ge 2 ]] || { echo "Brug: sudo livline-wifi --glem \"navn\""; exit 1; }
     nmcli connection delete "$2" && echo "Fjernet: $2"
     exit 0
 fi
 
-SSID="$1"
+if [[ $# -ge 1 ]]; then
+    SSID="$1"
+else
+    # VÆLG FRA EN LISTE I STEDET FOR AT SKRIVE NAVNET.
+    #
+    # Familiens netnavn er typisk noget i retning af "FTTH_PP2869" eller
+    # "Zyxel-2G-A41B". Det skal tastes rigtigt hver gang, og en enkelt
+    # forkert karakter giver et net, maskinen aldrig finder — uden at
+    # noget ser forkert ud. Er nettet i nærheden, kan maskinen læse
+    # navnet selv, og så skal ingen stave til det.
+    vis_gemte
+    echo
+    echo "Søger efter net i nærheden..."
+    mapfile -t FUNDET < <(
+        nmcli -t -f SIGNAL,SSID device wifi list --rescan yes 2>/dev/null \
+        | awk -F: 'NF>=2 && $2 != ""' \
+        | sort -t: -k1 -nr \
+        | awk -F: '!set[$2]++ {print $2 "\t" $1}'
+    )
+    echo
+    if (( ${#FUNDET[@]} == 0 )); then
+        echo "Ingen net i nærheden. Du kan stadig lægge et ind til senere:"
+        echo "   sudo livline-wifi \"Netværkets navn\""
+        exit 0
+    fi
+    for i in "${!FUNDET[@]}"; do
+        navn="${FUNDET[$i]%%$'\t'*}"; styrke="${FUNDET[$i]##*$'\t'}"
+        printf '  %2d)  %-32s %s%%\n' "$((i+1))" "$navn" "$styrke"
+    done
+    echo
+    echo "Skriv et NUMMER for at vælge, eller skriv navnet på et net, der"
+    echo "ikke er i nærheden. Enter afslutter uden at ændre noget."
+    read -rp "Valg: " VALG
+    if [[ -z "$VALG" ]]; then
+        echo "Intet ændret."
+        exit 0
+    elif [[ "$VALG" =~ ^[0-9]+$ ]]; then
+        if (( VALG < 1 || VALG > ${#FUNDET[@]} )); then
+            echo "FEJL: der er kun ${#FUNDET[@]} net på listen. Intet ændret."
+            exit 1
+        fi
+        SSID="${FUNDET[$((VALG-1))]%%$'\t'*}"
+        echo "Valgt: $SSID"
+    else
+        SSID="$VALG"
+    fi
+fi
 
 # KOBL ALDRIG PÅ MED DET SAMME.
 #
@@ -805,7 +1005,8 @@ SSID="$1"
 # Nu gør kommandoen kun ÉN ting: den lægger nettet ind. Maskinen kobler
 # sig selv på, når nettet er det bedste, den kan se — og hos familien er
 # det det eneste, der findes.
-read -rsp "Kode til \"$SSID\" (tom = åbent net): " K1; echo
+K1="$(laes_kode "Kode til \"$SSID\" (tom = åbent net): ")"
+K2=""
 if [[ -n "$K1" ]]; then
     # WPA kræver mindst 8 tegn. Uden dette tjek svarer nmcli
     # "psk: property is invalid", og det siger ingenting om hvorfor.
@@ -814,13 +1015,28 @@ if [[ -n "$K1" ]]; then
         echo "      Sæt en længere kode på nettet, og prøv igen."
         exit 1
     fi
-    # To gange, fordi koden ikke kan ses, mens den tastes. En tastefejl
-    # her opdages ellers først hos familien, hvor maskinen bare ikke vil
-    # koble sig på — og hvor ingen kan se hvorfor.
-    read -rsp "Skriv den igen: " K2; echo
-    if [[ "$K1" != "$K2" ]]; then
-        echo "FEJL: de to koder er ikke ens. Intet ændret."
-        exit 1
+    # EN TASTEFEJL HER OPDAGES ELLERS FØRST HOS FAMILIEN, hvor maskinen
+    # bare ikke vil koble sig på, og hvor ingen kan se hvorfor.
+    #
+    # To veje til samme sikkerhed, og du vælger selv:
+    #   - se koden én gang og kontrollér den med øjnene
+    #   - eller taste den igen
+    # At se den er det stærkeste tjek, men gør det kun, når ingen kigger
+    # med. Står du i en stue, så tast den hellere to gange.
+    read -rp "Vis koden, så du kan kontrollere den? [j/N]: " VIS
+    if [[ "$VIS" =~ ^[jJyY]$ ]]; then
+        echo "   Koden er: $K1"
+        read -rp "Er den rigtig? [j/N]: " OK
+        if [[ ! "$OK" =~ ^[jJyY]$ ]]; then
+            echo "Intet ændret."
+            exit 1
+        fi
+    else
+        K2="$(laes_kode "Skriv den igen: ")"
+        if [[ "$K1" != "$K2" ]]; then
+            echo "FEJL: de to koder er ikke ens. Intet ændret."
+            exit 1
+        fi
     fi
 fi
 

@@ -2924,6 +2924,167 @@ def _():
         "/indstillinger viser ikke lysstyrken — så kan den ikke tjekkes udefra"
 
 
+@proev("batteriet lader ikke til 100 % — det er maskinens nødstrøm")
+def _():
+    # Maskinen står i stikkontakten døgnet rundt, året rundt. Et
+    # litium-batteri, der holdes på 100 %, slides markant hurtigere end et,
+    # der holdes omkring 80 — og batteriet er ikke en bekvemmelighed her.
+    # Det er det eneste, der holder Livline i live, når strømmen går i en
+    # stue.
+    #
+    # Målt efter nogle måneder i stikket: 01 på 66 % af oprindelig
+    # kapacitet, 02 på 78 %. 80 % af et sundt batteri er mere værd end
+    # 100 % af et slidt.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+
+    assert "charge_control_end_threshold" in kode, \
+        "ladegrænsen sættes ikke — batteriet lader til 100 % døgnet rundt"
+    assert "livline-batteri.service" in kode, \
+        "grænsen sættes kun én gang og overlever ikke en genstart"
+    assert "systemctl enable --now livline-batteri" in kode, \
+        "enheden slås ikke til"
+
+    # IKKE TLP. Det er en hel strømstyringspakke, der også bestemmer over
+    # WiFi-strømsparing, USB og diske — og dem har vi allerede sat selv.
+    # To systemer, der styrer det samme, kostede en dag på lysstyrken.
+    assert "install -y" not in kode.split("charge_control")[0][-400:] or True
+    assert " tlp" not in kode.replace("tlp.conf", ""), \
+        "TLP er kommet ind igen — to systemer om den samme indstilling"
+
+    # Og scriptet skal ligge, hvor kiosk-brugeren ikke kan skrive i det:
+    # root kører det ved hver opstart.
+    assert "/usr/local/libexec/livline/batterigraense.sh" in kode, \
+        "root kører et script fra en mappe, appens bruger kan ændre"
+
+    # En maskine uden understøttelse må ikke tie om det
+    assert "understøtter ikke ladegrænse" in kode, \
+        "en manglende funktion forsvinder i tavshed — og viser sig som " \
+        "et dødt batteri om to år"
+    # … og en grænse, der blev skrevet men ikke slog igennem, skal råbe
+    assert "ADVARSEL: ladegrænsen står på" in kode, \
+        "der kontrolleres ikke, at grænsen faktisk nåede hardwaren"
+
+    # EN TJENESTE, DER VIRKER, MÅ IKKE MELDE FEJL.
+    # Første udgave sluttede med  [ "$fundet" -eq 0 ] && logger ...
+    # Lykkedes alt, var testen falsk, linjen returnerede 1, og det var
+    # scriptets sidste kommando — så systemd meldte fejl, mens grænsen
+    # stod helt rigtigt. Ser man rødt på noget, der virker, holder man op
+    # med at tro på de røde ting.
+    bat = kode.split("batterigraense.sh <<'BATEOF'")[1].split("BATEOF")[0]
+    assert bat.rstrip().endswith("exit 0"), \
+        "scriptet slutter ikke med exit 0 — tjenesten kan melde fejl, " \
+        "selv om ladegrænsen blev sat"
+
+
+@proev("skærmen må ikke blinke — panel self-refresh slås fra")
+def _():
+    # SET PÅ MASKINE 02 dagen før den skulle leveres: skærmen blev
+    # kortvarigt mørk med tilfældige mellemrum. Panel self-refresh lader
+    # panelet genbruge sit eget billede for at spare strøm, og på flere
+    # Intel-paneler giver det korte udfald.
+    #
+    # I en stue er en skærm, der blinker, ikke en skønhedsfejl. Den ser ud
+    # som en maskine på vej i stykker — og en mand med demens kan ikke
+    # vurdere det. Han kan bare se, at noget er galt.
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+    assert "i915.enable_psr=0" in kode, \
+        "panel self-refresh slås ikke fra — skærmen kan blinke i stuen"
+    assert "update-grub" in kode, \
+        "parameteren skrives, men grub opdateres ikke — den ville aldrig virke"
+    # Scriptet skal kunne køres igen uden at lægge parameteren ind to gange
+    assert 'grep -q "i915.enable_psr=0" /etc/default/grub' in kode, \
+        "der tjekkes ikke, om parameteren allerede står der"
+    # Og en fejl må ikke forsvinde i tavshed. Afsnittet går fra sin egen
+    # overskrift til den næste — dér skal advarslen stå.
+    afsnit = kode.split("Skærmen må ikke blinke")[1].split('echo "-- ')[0]
+    assert afsnit.count("ADVARSEL") >= 2, \
+        "lykkes det ikke at slå self-refresh fra, siges det ikke højt"
+
+
+@proev("skærmen siger selv, når der ikke er forbindelse")
+def _():
+    # SET I VIRKELIGHEDEN (29.09): Ulrik var hos sine forældre på et andet
+    # net og undrede sig over, at maskinen ikke virkede. Han har bygget
+    # den. Erland ville aldrig kunne gennemskue det.
+    #
+    # Er nettet væk, ser skærmen præcis ud som en skærm, hvor familien ikke
+    # har skrevet. Den ældre kan ikke se forskel — og familien kan heller
+    # ikke, for deres beskeder ser afsendte ud i Telegram. Det er den
+    # samme fejltype som alle de andre: maskinen taber noget i tavshed.
+    ui = byg(mode="faellestraad", blink=False)
+    try:
+        # Forbindelsen er i orden: ingen linje
+        ui.bot.sidste_net_ok = time.monotonic()
+        ui._vis_netstatus()
+        ui.root.update()
+        assert not ui._netlinje.winfo_ismapped(), \
+            "netlinjen står på skærmen, selv om forbindelsen er i orden"
+
+        # Et KORT udfald må ikke sætte noget op. En linje, der kommer og
+        # går hele dagen, holder man op med at læse.
+        ui.bot.sidste_net_ok = time.monotonic() - 60
+        ui._vis_netstatus()
+        ui.root.update()
+        assert not ui._netlinje.winfo_ismapped(), \
+            "et minuts udfald satte allerede en advarsel op"
+
+        # Et VEDVARENDE udfald skal siges
+        ui.bot.sidste_net_ok = time.monotonic() - (lv.NET_STILLE_SEK + 30)
+        ui._vis_netstatus()
+        ui.root.update()
+        assert ui._netlinje.winfo_ismapped(), \
+            "nettet har været væk i minutter, og skærmen siger ingenting"
+        tekst = ui._netlinje.cget("text")
+        assert "Ingen forbindelse" in tekst, f"uforståelig linje: {tekst!r}"
+        # Den må ikke bede ham om at gøre noget — han kan ikke rette det
+        for ord in ("tjek", "kontrollér", "genstart", "router", "prøv"):
+            assert ord not in tekst.lower(), \
+                f"linjen beder ham om at handle ({ord!r}): {tekst!r}"
+
+        # Og hovedet må IKKE være overskrevet — "Ny besked" er en
+        # oplysning, der ikke må forsvinde, fordi der kommer en anden
+        besked(ui, 11, "Mor", "er du der?")
+        ui.root.update()
+        assert "Ny besked" in ui._top_tekst.cget("text"), \
+            "netlinjen har taget hovedets plads"
+
+        # Kommer forbindelsen tilbage, forsvinder linjen af sig selv
+        ui.bot.sidste_net_ok = time.monotonic()
+        ui._vis_netstatus()
+        ui.root.update()
+        assert not ui._netlinje.winfo_ismapped(), \
+            "linjen blev stående, efter at forbindelsen var tilbage"
+    finally:
+        luk(ui)
+
+
+@proev("netvagten står for sig selv og siger til i loggen")
+def _():
+    # Vagten må ikke spørge python-telegram-bot om noget: den skal også
+    # virke, mens bot-laget er ved at genstarte sig selv efter en fejl.
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    blok = kilde.split("def _netvagt")[1].split("\n    def ")[0]
+    assert "socket.create_connection" in blok, \
+        "vagten bruger bot-laget i stedet for sin egen forbindelse"
+    assert "log.warning" in blok and "log.info" in blok, \
+        "et udfald og dets afslutning skrives ikke i loggen"
+    assert "net_vaek_siden" in blok, \
+        "der måles ikke, hvor længe udfaldet varede"
+    # /status skal kunne spørges om det udefra
+    assert "Forbindelse: i orden" in kilde, \
+        "/status siger ikke noget om forbindelsen"
+
+
 @proev("ingen anden end Livline må røre lysstyrken")
 def _():
     # Set på maskine 02 (28.09): skærmen skiftede lysstyrke af sig selv, og
@@ -2942,9 +3103,17 @@ def _():
                      if not l.lstrip().startswith("#"))
     for indstilling in ("idle-dim false",
                         "ambient-enabled false",
-                        "night-light-enabled false"):
+                        "night-light-enabled false",
+                        "idle-activation-enabled false",
+                        "idle-delay 0"):
         assert indstilling in kode, \
             f"{indstilling!r} sættes ikke — skærmen kan stadig ændre sig selv"
+
+    # EN SORT SKÆRM KAN SENDE EN BESKED, INGEN HAR MENT.
+    # Set på maskine 02 (01.10): skærmen tændte kl. 8 og blev sort igen
+    # kl. 8.12. Han kan ikke vide, at den skal vækkes — og trykker han på
+    # en tast for at se, om maskinen lever, er det én af de fem
+    # svartaster. Så får familien et "Tak" ud af ingenting.
 
     # Og appen skal stadig selv styre baglyset, ellers har vi kun slukket
     # for den ene af de to.
@@ -3094,10 +3263,35 @@ def _():
     # Koden kan ikke ses, mens den tastes. Så skal den tastes to gange —
     # ellers opdages tastefejlen først hos familien, hvor maskinen bare
     # ikke vil koble sig på, og ingen kan se hvorfor.
-    assert blok.count("read -rsp") >= 2, \
-        "koden tastes kun én gang — en tastefejl opdages først hos familien"
+    assert "laes_kode" in blok, \
+        "koden læses stadig med read -rsp, som ikke viser noget som helst"
+
+    # EN PROMPT, DER IKKE VISER NOGET, LIGNER EN MASKINE, DER HAR HÆNGT SIG.
+    # Prøvet med USB-tastatur på maskine 02 (29.09): man taster en lang
+    # kode ud i ingenting og trykker Enter for at se, om maskinen lever.
+    # I en fremmed stue, med nogen der kigger, er det ikke rart.
+    assert "printf '*'" in blok, \
+        "der kommer ingen stjerner — man kan ikke se, at maskinen tager imod"
+    assert "\\b \\b" in blok, "backspace virker ikke i kodefeltet"
+
+    # To veje til samme sikkerhed: se koden én gang, eller taste den igen.
+    assert "Vis koden" in blok, \
+        "koden kan ikke kontrolleres med øjnene"
+    assert "Skriv den igen" in blok, \
+        "muligheden for at taste koden to gange er væk"
     assert "mindst 8 tegn" in blok, \
         "for kort kode giver nmcli's uforståelige 'psk: property is invalid'"
+
+    # VÆLG FRA EN LISTE I STEDET FOR AT STAVE TIL NAVNET.
+    # Familiens netnavn er typisk "FTTH_PP2869" eller "Zyxel-2G-A41B".
+    # Én forkert karakter giver et net, maskinen aldrig finder — uden at
+    # noget ser forkert ud.
+    assert "--rescan yes" in blok, "der søges ikke efter net i nærheden"
+    assert "Skriv et NUMMER" in blok, "man kan ikke vælge nettet fra listen"
+    assert "der er kun" in blok, \
+        "et nummer uden for listen fanges ikke"
+    assert "Intet ændret." in blok, \
+        "Enter uden valg siger ikke, at der ikke skete noget"
 
 
 @proev("/opdater kan ikke tændes uden en nøgle at kontrollere med")
