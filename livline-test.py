@@ -3242,8 +3242,6 @@ def _():
     assert "/usr/local/bin/livline-wifi" in t, \
         "livline-wifi lægges ikke på maskinen"
     blok = t.split("livline-wifi: læg et netværk ind")[1].split("WIFIEOF")[1]
-    assert "read -rsp" in blok, \
-        "koden tastes ikke skjult — den kan ende i historikken"
     assert "connection add type wifi" in blok, \
         "et net uden for rækkevidde kan ikke lægges ind hjemmefra"
 
@@ -3263,8 +3261,13 @@ def _():
     # Koden kan ikke ses, mens den tastes. Så skal den tastes to gange —
     # ellers opdages tastefejlen først hos familien, hvor maskinen bare
     # ikke vil koble sig på, og ingen kan se hvorfor.
+    # KRAVET er, at koden ikke kan ses, mens den tastes — ikke at der
+    # bruges en bestemt kommando. Her stod før "read -rsp in blok", og da
+    # vi skiftede til laes_kode i 4.83, fejlede prøven på en kode, der var
+    # blevet BEDRE. Tredje gang den fælde i denne fil: en prøve skal
+    # beskrive kravet, ikke opskriften.
     assert "laes_kode" in blok, \
-        "koden læses stadig med read -rsp, som ikke viser noget som helst"
+        "koden læses ikke gennem det skjulte kodefelt"
 
     # EN PROMPT, DER IKKE VISER NOGET, LIGNER EN MASKINE, DER HAR HÆNGT SIG.
     # Prøvet med USB-tastatur på maskine 02 (29.09): man taster en lang
@@ -3339,8 +3342,13 @@ def _():
         "der skiftes, FØR fortrydelsen er bestilt"
     assert "kunne ikke bestille en fortrydelse" in skift, \
         "fejler bestillingen, skiftes der alligevel"
-    # Og man skal ikke kunne skifte til et net, maskinen ikke kender
-    assert "er ikke lagt ind endnu" in skift, \
+    # Og man skal ikke kunne skifte til et net, maskinen ikke kender.
+    #
+    # Kontrollen ligger i --skift-grenen, ikke inde i funktionen: de to
+    # andre veje kalder kun skift_til med et net, maskinen allerede kender.
+    # Prøven kiggede før inde i funktionen og fejlede på en omlægning, der
+    # var rigtig. Den slags skal måles på BLOKKEN, ikke på strukturen.
+    assert "er ikke lagt ind endnu" in blok, \
         "man kan skifte til et net uden kode — maskinen ender uden net"
 
 
