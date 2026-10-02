@@ -3315,7 +3315,15 @@ def _():
     # virker det nye net ikke, er maskinen uden for rækkevidde.
     assert "--skift" in blok, "man kan ikke skifte net på afstand"
     assert "--behold" in blok, "en fortrydelse kan ikke aflyses"
-    skift = blok.split('"$1" == "--skift"')[1].split("\nfi\n")[0]
+    # ÉN MÅDE AT SKIFTE PÅ. Skiftet ligger i en funktion, så der kun
+    # findes ét sted, fortrydelsen kan blive glemt — og så kommandoen kan
+    # TILBYDE skiftet i stedet for at bede dig skrive en kommando, du lige
+    # har valgt dig frem til.
+    assert "skift_til()" in blok, \
+        "skiftet ligger ikke i en funktion — så kan det glemmes ét af stederne"
+    assert blok.count("Skal maskinen skifte til") >= 2, \
+        "skiftet tilbydes ikke både ved et kendt og et nyt net"
+    skift = blok.split("skift_til() {")[1].split("\n}\n")[0]
     assert "systemd-run" in skift and "--on-active=300" in skift, \
         "der bestilles ingen fortrydelse — maskinen kan låse sig selv ude"
     # Fortrydelsen skal bestilles FØR der skiftes. Omvendt rækkefølge

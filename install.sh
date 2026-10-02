@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.89"
+INSTALL_VER="4.90"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -931,6 +931,43 @@ laes_kode() {
     printf '%s' "$svar"
 }
 
+# SKIFT MED EN SNOR I. Bruges både af --skift og af spørgsmålene
+# nedenfor, så der kun findes ÉN måde at skifte net på — og dermed kun
+# ét sted, fortrydelsen kan blive glemt.
+skift_til() {
+    local NYT="$1" GAMMELT
+    GAMMELT=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+              | awk -F: '$2=="802-11-wireless"{print $1; exit}')
+    if [[ -z "$GAMMELT" ]]; then
+        echo "FEJL: maskinen står ikke på et WiFi lige nu — kan ikke fortryde."
+        echo "      Skift i stedet i hånden med nmcli."
+        return 1
+    fi
+    if [[ "$GAMMELT" == "$NYT" ]]; then
+        echo "Maskinen står allerede på \"$NYT\". Intet ændret."
+        return 0
+    fi
+    systemctl stop livline-fortryd.timer 2>/dev/null || true
+    if ! systemd-run --unit=livline-fortryd --on-active=300 \
+         --description="Livline: saetter nettet tilbage, hvis skiftet ikke virkede" \
+         nmcli connection up "$GAMMELT" >/dev/null 2>&1; then
+        echo "FEJL: kunne ikke bestille en fortrydelse. Skifter IKKE."
+        echo "      Uden den kan maskinen ende uden for rækkevidde."
+        return 1
+    fi
+    echo
+    echo "Fortrydelse bestilt: om 5 minutter går maskinen tilbage til"
+    echo "\"$GAMMELT\", medmindre du siger til."
+    echo
+    echo "Skifter nu til \"$NYT\" — forbindelsen ryger et øjeblik."
+    echo
+    echo "VIRKER DET? Så log ind igen og kør:"
+    echo "   sudo livline-wifi --behold"
+    echo
+    nmcli connection up "$NYT" || true
+    return 0
+}
+
 vis_gemte() {
     echo "Gemte net (maskinen vælger selv det, der er i nærheden):"
     nmcli -g NAME,TYPE connection show 2>/dev/null \
@@ -958,41 +995,13 @@ fi
 
 if [[ $# -ge 1 && "$1" == "--skift" ]]; then
     [[ $# -ge 2 ]] || { echo "Brug: sudo livline-wifi --skift \"navn\""; exit 1; }
-    NYT="$2"
-    if ! nmcli -g NAME connection show 2>/dev/null | grep -qxF "$NYT"; then
-        echo "FEJL: \"$NYT\" er ikke lagt ind endnu."
+    if ! nmcli -g NAME connection show 2>/dev/null | grep -qxF "$2"; then
+        echo "FEJL: \"$2\" er ikke lagt ind endnu."
         echo "      Læg det ind først med: sudo livline-wifi"
         exit 1
     fi
-    GAMMELT=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
-              | awk -F: '$2=="802-11-wireless"{print $1; exit}')
-    if [[ -z "$GAMMELT" ]]; then
-        echo "FEJL: maskinen står ikke på et WiFi lige nu — kan ikke fortryde."
-        echo "      Skift i stedet med: nmcli connection up \"$NYT\""
-        exit 1
-    fi
-    if [[ "$GAMMELT" == "$NYT" ]]; then
-        echo "Maskinen står allerede på \"$NYT\". Intet ændret."
-        exit 0
-    fi
-    systemctl stop livline-fortryd.timer 2>/dev/null || true
-    if ! systemd-run --unit=livline-fortryd --on-active=300 \
-         --description="Livline: sætter nettet tilbage, hvis skiftet ikke virkede" \
-         nmcli connection up "$GAMMELT" >/dev/null 2>&1; then
-        echo "FEJL: kunne ikke bestille en fortrydelse. Skifter IKKE."
-        echo "      Uden den kan maskinen ende uden for rækkevidde."
-        exit 1
-    fi
-    echo "Fortrydelse bestilt: om 5 minutter går maskinen tilbage til"
-    echo "\"$GAMMELT\", medmindre du siger til."
-    echo
-    echo "Skifter nu til \"$NYT\" — forbindelsen ryger et øjeblik."
-    echo
-    echo "VIRKER DET? Så log ind igen og kør:"
-    echo "   sudo livline-wifi --behold"
-    echo
-    nmcli connection up "$NYT" || true
-    exit 0
+    skift_til "$2"
+    exit $?
 fi
 
 if [[ $# -ge 1 && "$1" == "--glem" ]]; then
@@ -1091,10 +1100,15 @@ if nmcli -g NAME connection show 2>/dev/null | grep -qxF "$SSID"; then
     echo "\"$SSID\" kender maskinen allerede."
     read -rp "Vil du opdatere koden? [j/N]: " OPDAT
     if [[ ! "$OPDAT" =~ ^[jJyY]$ ]]; then
+        echo "Koden er urørt."
+        # TILBYD SKIFTET HER. Det var klodset at få besked om at skrive en
+        # kommando, man lige har valgt sig frem til.
+        read -rp "Skal maskinen skifte til \"$SSID\" nu? [j/N]: " SKIFT
+        if [[ "$SKIFT" =~ ^[jJyY]$ ]]; then
+            skift_til "$SSID"
+            exit $?
+        fi
         echo "Intet ændret."
-        echo
-        echo "Vil du have maskinen til at SKIFTE til nettet nu:"
-        echo "   sudo livline-wifi --skift \"$SSID\""
         exit 0
     fi
 fi
@@ -1156,8 +1170,11 @@ echo "Lagt ind: $SSID"
 echo "Maskinen kobler sig selv på, når nettet er i nærheden — og når det"
 echo "er det eneste, den kan se. Din fjernforbindelse er urørt."
 echo
-echo "Vil du koble på NU, så vid at du mister forbindelsen til maskinen:"
-echo "   sudo nmcli connection up \"$SSID\""
+read -rp "Skal maskinen skifte til \"$SSID\" nu? [j/N]: " SKIFT
+if [[ "$SKIFT" =~ ^[jJyY]$ ]]; then
+    skift_til "$SSID"
+fi
+exit 0
 WIFIEOF
 chmod 755 /usr/local/bin/livline-wifi
 echo "   livline-wifi lagt på maskinen ✔"
