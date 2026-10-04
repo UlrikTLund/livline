@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.91"
+INSTALL_VER="4.92"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -447,7 +447,10 @@ export PYTHONUNBUFFERED=1
 # Findes værktøjet ikke (en maskine uden GNOME), kører appen som før.
 # Så dæmper skærmen måske — men maskinen virker, og det siges i loggen.
 if command -v gnome-session-inhibit >/dev/null 2>&1; then
-    INHIBIT="gnome-session-inhibit --inhibit idle --inhibit-logout --reason Livline"
+    # --inhibit tager EN liste, ikke flere tilvalg. "--inhibit-logout"
+    # findes ikke, og med den stod maskinen og viste skrivebordet, mens
+    # run.sh prøvede at starte appen hvert femte sekund i tavshed.
+    INHIBIT="gnome-session-inhibit --inhibit idle --reason Livline"
     logger -t livline "Skærmen holdes vågen med gnome-session-inhibit"
 else
     INHIBIT=""
