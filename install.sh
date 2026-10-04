@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.90"
+INSTALL_VER="4.91"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -333,21 +333,6 @@ logger -t livline "Skrivebordet er klar — starter Livline"
 # Kiosk-indstillinger (kører i den grafiske session — virker på Wayland)
 gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
 gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null || true
-# SKÆRMEN MÅ ALDRIG BLIVE SORT MIDT PÅ DAGEN.
-#
-# idle-delay 0 ovenfor slår sessionens uvirksomheds-ur fra, men
-# pauseskærmen har sin EGEN kontakt — og den stod tændt. Set på maskine
-# 02 hos Ulriks mor (01.10): skærmen tændte pænt kl. 8 og blev sort igen
-# omkring kl. 8.12. Appens log frikendte den: "Nattilstand: skærmen
-# tændt" kl. 08.00.10 og intet derefter.
-#
-# Hvorfor det er værre, end det lyder: han kan ikke vide, at skærmen
-# skal vækkes. Og trykker han på en tast for at se, om maskinen lever,
-# er det ÉN AF DE FEM SVARTASTER — så får familien et "Tak" ud af
-# ingenting. En sort skærm er ikke bare en sort skærm her; den kan sende
-# en besked, ingen har ment.
-gsettings set org.gnome.desktop.screensaver idle-activation-enabled false \
-    2>/dev/null || true
 gsettings set org.gnome.settings-daemon.plugins.power \
     sleep-inactive-ac-type 'nothing' 2>/dev/null || true
 # ... OG på batteri. Set i drift: da strømmen blev taget for at afprøve
@@ -366,33 +351,34 @@ gsettings set org.gnome.settings-daemon.plugins.power \
 gsettings set org.gnome.settings-daemon.plugins.power \
     power-button-action 'nothing' 2>/dev/null || true
 
-# INGEN ANDEN END LIVLINE MÅ RØRE LYSSTYRKEN.
+# LYSSENSOREN SKAL VÆRE SLÅET FRA — og kun den.
 #
-# Set på maskine 02 (28.09): skærmen skiftede lysstyrke af sig selv, og
-# et tryk på en tast bragte den op igen. Farverne så skiftevis lyse og
-# udvaskede ud, og det lignede en dårlig skærm.
+# T470s har en lysføler ved skærmen. Med den tændt følger lysstyrken
+# rummets lys, uafhængigt af om nogen rører maskinen. Og Livline skriver
+# selv en fast lysstyrke ("lysstyrke" i config). To, der skriver i den
+# samme fil, giver et lys, der vandrer.
 #
-# Det var to systemer, der sloges om den samme fil. GNOME dæmper skærmen
-# efter et stykke tid uden aktivitet (idle-dim) og skruer op igen ved
-# næste tastetryk. Livlines egen nattevagt skriver max_brightness hvert
-# halve minut. Resultatet: lyset går op og ned hele dagen.
+# DE TRE ANDRE ER FJERNET IGEN (04.10), og det er værd at læse hvorfor.
 #
-# I en stue hos en mand med demens er en skærm, der skifter af sig selv,
-# ikke en skønhedsfejl. Den ser ud, som om maskinen er ved at gå i stykker
-# — og han kan ikke spørge nogen om det.
+# Vi slog også idle-dim, idle-activation og night-light fra. Begrundelsen
+# var den samme observation: lysstyrken varierede. Den observation var
+# rigtig — GNOME dæmpede til 30 %, mens appen skrev fuld styrke tilbage
+# hvert halve minut.
 #
-# ambient-enabled er lyssensoren: T470s har en, og med den tændt følger
-# lysstyrken rummets lys. Samme problem, anden årsag.
+# Men rettelsen var forkert. Da GNOME ikke længere måtte dæmpe, SLUKKEDE
+# et lag længere nede panelet i stedet — helt, hvert 15. sekund. Vi
+# byttede en dæmpning, ingen bemærkede, for et blink, alle kunne se.
 #
-# night-light skifter farvetemperaturen om aftenen. Skærmen bliver varmere
-# og gulere efter et klokkeslæt, vi ikke selv bestemmer — og Livline har
-# allerede sin egen nattetilstand.
-gsettings set org.gnome.settings-daemon.plugins.power \
-    idle-dim false 2>/dev/null || true
+# Målt på maskine 04 den 04.10: med de tre sat tilbage til Ubuntus
+# standard blev skærmen tændt i timevis, og GNOME dæmpede pænt til 30 %.
+# Med dem slået fra skiftede bl_power mellem 0 og 4 hvert 15. sekund.
+#
+# Den rigtige løsning står nedenfor: appen beder sessionen om ikke at gå
+# i dvale. Så dæmper GNOME aldrig, slukker aldrig — og der er ingen at
+# slås med. At fjerne nogens indstillinger er ikke det samme som at
+# overtage arbejdet.
 gsettings set org.gnome.settings-daemon.plugins.power \
     ambient-enabled false 2>/dev/null || true
-gsettings set org.gnome.settings-daemon.plugins.color \
-    night-light-enabled false 2>/dev/null || true
 
 gsettings set org.gnome.desktop.notifications show-banners false 2>/dev/null || true
 # GENVEJSTASTERNE SLÅS FRA. Set på hardware: et tryk på Windows-tasten
@@ -440,13 +426,41 @@ LIVLINE_PY=/opt/livline/venv/bin/python
 # den ikke skriver til en skærm — og så kommer linjerne først, når appen
 # dør. Netop dér, hvor man har mest brug for dem.
 export PYTHONUNBUFFERED=1
+# SESSIONEN MÅ ALDRIG GÅ I DVALE, MENS LIVLINE KØRER.
+#
+# Det her er rettelsen på fire dages jagt, og den er værd at forstå.
+#
+# GNOME dæmper skærmen, når ingen rører maskinen, og slukker den til
+# sidst. For en maskine, der står i en stue og SKAL kunne læses på
+# afstand uden at nogen rører den, er det forkert — men det er ikke
+# GNOME, der tager fejl. Det er os, der ikke har sagt, hvad maskinen er.
+#
+# Vi prøvede først at slå GNOME's indstillinger fra. Det gav et blink
+# hvert 15. sekund, fordi et lag længere nede overtog og slukkede
+# panelet helt. Vi fjernede styringen uden at overtage arbejdet.
+#
+# gnome-session-inhibit holder en "jeg er i gang"-markering, så længe
+# kommandoen kører — præcis som en videoafspiller gør under en film.
+# Dør appen, forsvinder markeringen af sig selv. Der er ingen tilstand
+# at rydde op i, og ingen indstilling at glemme at sætte tilbage.
+#
+# Findes værktøjet ikke (en maskine uden GNOME), kører appen som før.
+# Så dæmper skærmen måske — men maskinen virker, og det siges i loggen.
+if command -v gnome-session-inhibit >/dev/null 2>&1; then
+    INHIBIT="gnome-session-inhibit --inhibit idle --inhibit-logout --reason Livline"
+    logger -t livline "Skærmen holdes vågen med gnome-session-inhibit"
+else
+    INHIBIT=""
+    logger -t livline "ADVARSEL: gnome-session-inhibit mangler — skærmen kan dæmpe af sig selv"
+fi
+
 FAILS=0
 while true; do
     START=$(date +%s)
     if command -v systemd-cat >/dev/null 2>&1; then
-        systemd-cat -t livline "$LIVLINE_PY" /opt/livline/livline_bot.py
+        systemd-cat -t livline $INHIBIT "$LIVLINE_PY" /opt/livline/livline_bot.py
     else
-        "$LIVLINE_PY" /opt/livline/livline_bot.py 2>&1 | logger -t livline
+        $INHIBIT "$LIVLINE_PY" /opt/livline/livline_bot.py 2>&1 | logger -t livline
     fi
     DUR=$(( $(date +%s) - START ))
     if [ "$DUR" -lt 20 ]; then FAILS=$((FAILS+1)); else FAILS=0; fi

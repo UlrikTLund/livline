@@ -3085,40 +3085,56 @@ def _():
         "/status siger ikke noget om forbindelsen"
 
 
-@proev("ingen anden end Livline må røre lysstyrken")
+@proev("sessionen må aldrig gå i dvale, mens Livline kører")
 def _():
-    # Set på maskine 02 (28.09): skærmen skiftede lysstyrke af sig selv, og
-    # et tastetryk bragte den op igen. Det lignede en dårlig skærm.
+    # RETTELSEN PÅ FIRE DAGES JAGT, og den er værd at have en prøve på.
     #
-    # To systemer sloges om den samme fil: GNOME dæmper efter inaktivitet
-    # og skruer op ved næste tast, mens Livlines nattevagt skriver
-    # max_brightness hvert halve minut. En skærm, der skifter af sig selv,
-    # ser i en dement mands stue ud, som om maskinen er ved at gå i stykker
-    # — og han kan ikke spørge nogen om det.
+    # GNOME dæmper skærmen, når ingen rører maskinen, og slukker den til
+    # sidst. For en maskine, der står i en stue og skal kunne læses på
+    # afstand uden at nogen rører den, er det forkert — men GNOME tager
+    # ikke fejl. Vi havde bare ikke sagt, hvad maskinen er.
+    #
+    # Første forsøg var at slå GNOME's indstillinger fra. Det gav et blink
+    # hvert 15. sekund: et lag længere nede overtog og slukkede panelet
+    # helt. Målt på maskine 04 den 04.10 — bl_power skiftede mellem 0 og 4,
+    # mens brightness slet ikke rørte sig, og GNOME's pauseskærm aldrig var
+    # aktiv.
+    #
+    # Vi fjernede styringen uden at overtage arbejdet.
     sti = pathlib.Path(lv.__file__).parent / "install.sh"
     if not sti.exists():
         return
     t = sti.read_text(encoding="utf-8")
     kode = "\n".join(l for l in t.splitlines()
                      if not l.lstrip().startswith("#"))
-    for indstilling in ("idle-dim false",
-                        "ambient-enabled false",
-                        "night-light-enabled false",
-                        "idle-activation-enabled false",
-                        "idle-delay 0"):
-        assert indstilling in kode, \
-            f"{indstilling!r} sættes ikke — skærmen kan stadig ændre sig selv"
 
-    # EN SORT SKÆRM KAN SENDE EN BESKED, INGEN HAR MENT.
-    # Set på maskine 02 (01.10): skærmen tændte kl. 8 og blev sort igen
-    # kl. 8.12. Han kan ikke vide, at den skal vækkes — og trykker han på
-    # en tast for at se, om maskinen lever, er det én af de fem
-    # svartaster. Så får familien et "Tak" ud af ingenting.
+    assert "gnome-session-inhibit" in kode, \
+        "sessionen får ikke besked om, at maskinen er i brug — " \
+        "skærmen dæmper og slukker af sig selv"
+    assert "--inhibit idle" in kode, \
+        "der holdes ikke på netop uvirksomheds-markeringen"
+    # Markeringen skal følge APPEN, ikke ligge som en løs proces. Dør
+    # appen, skal den forsvinde af sig selv — ingen tilstand at rydde op i.
+    assert "$INHIBIT \"$LIVLINE_PY\"" in kode, \
+        "markeringen holdes ikke om selve appen"
+    # Mangler værktøjet, skal det siges — ikke forsvinde
+    assert "gnome-session-inhibit mangler" in kode, \
+        "en maskine uden værktøjet tier om, at skærmen kan dæmpe"
 
-    # Og appen skal stadig selv styre baglyset, ellers har vi kun slukket
-    # for den ene af de to.
-    app = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
-    assert "def _baglys" in app, "appen styrer ikke længere baglyset"
+    # OG DE TRE INDSTILLINGER SKAL VÆRE VÆK IGEN.
+    # De blev sat ud fra en observation, der var rigtig, med en rettelse,
+    # der var forkert. Kommer de tilbage, kommer blinket med dem.
+    for forbudt in ("idle-dim false",
+                    "idle-activation-enabled false",
+                    "night-light-enabled false"):
+        assert forbudt not in kode, \
+            f"{forbudt!r} er sat igen — det gav et blink hvert 15. sekund"
+
+    # Lyssensoren SKAL stadig være slået fra: den ændrer lysstyrken
+    # uafhængigt af, om nogen rører maskinen, og slås med appens egen
+    # faste lysstyrke om den samme fil.
+    assert "ambient-enabled false" in kode, \
+        "lyssensoren slås ikke fra — den slås med appens faste lysstyrke"
 
 
 @proev("install.sh slår genvejstasterne fra")
