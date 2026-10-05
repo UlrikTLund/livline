@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.93"
+INSTALL_VER="4.95"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -52,10 +52,16 @@ read -rp "Dit admin chat_id (din egen Telegram): " ADMIN_ID
 [[ "$TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || {
     echo "FEJL: tokenen ser ikke rigtig ud (forventet form 123456789:AA…)."; exit 1; }
 read -rp "Maskinnavn (fx 'Farmors Livline'): " MACHINE_NAME
-read -rp "Tilstand [faellestraad/enkelte] (enter = faellestraad): " MODE
-MODE=${MODE:-faellestraad}
-[[ "$MODE" == "faellestraad" || "$MODE" == "enkelte" ]] || {
-    echo "FEJL: tilstand skal være faellestraad eller enkelte."; exit 1; }
+# ET SPØRGSMÅL MINDRE (v4.95). Der blev spurgt om tilstand, og "enkelte"
+# var et gyldigt svar. Den tilstand er slået fra: samtaleskift kræver
+# F2-F12, og det kræver et tastaturdæk med navnene over de taster — et dæk,
+# der ikke findes endnu.
+#
+# Et spørgsmål, hvor det ene svar ikke virker, er en fælde ved et bord kl.
+# 23. Nu er der ikke noget at svare forkert på.
+#
+# Se opgave #77. Tilstanden er ikke kasseret, og koden er bevaret.
+MODE=faellestraad
 read -rp "Update-URL til /opdater (enter = slået fra): " UPDATE_URL
 UPDATE_URL=${UPDATE_URL:-}
 
@@ -296,6 +302,33 @@ if [[ ! -f /var/lib/livline/whitelist.json ]]; then
     chown "$KIOSK_USER":"$KIOSK_USER" /var/lib/livline/whitelist.json
 fi
 
+# FINDES NØGLEN TIL DAGSTYRKEN OVERHOVEDET?
+#
+# Det er her, en hård kontrol hører hjemme: på byggetid, hvor du står ved
+# maskinen og kan gøre noget. IKKE i run.sh, som kører hver dag — der
+# ville en afbrydelse efterlade et tomt skrivebord i en stue.
+#
+# Og der kontrolleres kun, at NØGLEN FINDES. Værdien kan ikke måles her:
+# install.sh kører som root, og root har sine egne indstillinger. Den
+# værdi, der betyder noget, hører til kiosk-brugerens session, og den
+# findes endnu ikke. Værdien kontrolleres i stedet under indkøringen, på
+# en kørende maskine.
+#
+# Risikoen, dette fanger, er reel: forsvinder nøglen ved en
+# Ubuntu-opdatering, bliver dagstyrken GNOMEs 30 % — og det er for mørkt
+# på tre meters afstand, uden at nogen får det at vide.
+echo "-- Tjekker, at dagstyrkens indstilling findes..."
+if ! gsettings range org.gnome.settings-daemon.plugins.power \
+        idle-brightness >/dev/null 2>&1; then
+    echo "FEJL: nøglen 'idle-brightness' findes ikke i GNOMEs skemaer på"
+    echo "      denne Ubuntu-version. Dagstyrken kan ikke sættes, og"
+    echo "      skærmen vil dæmpe til 30 %, som er for mørkt på afstand."
+    echo
+    echo "      Det skal løses, før maskinen bygges. Installation afbrudt."
+    exit 1
+fi
+echo "   idle-brightness findes i skemaet ✔"
+
 echo "-- Opretter start-script med auto-genstart..."
 cat > /opt/livline/run.sh <<'EOF'
 #!/usr/bin/env bash
@@ -351,6 +384,41 @@ gsettings set org.gnome.settings-daemon.plugins.power \
 gsettings set org.gnome.settings-daemon.plugins.power \
     power-button-action 'nothing' 2>/dev/null || true
 
+# GNOME EJER LYSSTYRKEN OM DAGEN — og vi fortæller den, hvor lyst det skal
+# være, i stedet for at skrive imod den.
+#
+# idle-brightness er den styrke, GNOME dæmper til, når ingen rører maskinen.
+# Standard er 30 %. For en skærm, der SKAL kunne læses på tre meters afstand
+# uden at nogen rører den, er 30 % i underkanten — og 100 % er værre: målt i
+# drift er fuldt baglys sværere at læse end det halve, fordi det sorte vaskes
+# ud, og det er kontrasten, aldersøjne læser efter.
+#
+# 45 % er valgt efter at have prøvet tre niveauer på tre meters afstand.
+#
+# OG DET ER NU DEN ENESTE DAGSTYRKE. Appen skrev før sin egen værdi hvert
+# halve minut, GNOME dæmpede imellem, og lyset vandrede mellem 100 og 30.
+# Fra v4.94 skriver appen kun ved nat og morgen. Ét system, én værdi, intet
+# sving.
+# HER SÆTTES DEN, OG HER MÅ DER IKKE AFBRYDES.
+#
+# Jeg skrev først kontrollen med "exit 1" ind HER — altså inde i run.sh,
+# som kører ved hver session. Fejlede tjekket, afsluttede run.sh, og appen
+# startede aldrig: tomt skrivebord i en stue, og ingen til at starte den
+# igen. Fundet i en udefrakommende gennemgang samme dag.
+#
+# Lærestykket er værd at huske, for fejlen er let at gentage: en
+# BYGGETIDSKONTROL må ikke stå i noget, der kører hver dag. Her, i
+# run.sh, er den rigtige opførsel at prøve, logge hvis det går skævt, og
+# KØRE VIDERE. En skærm med forkert lysstyrke er til at leve med. En
+# skærm uden Livline er ikke.
+#
+# Den hårde kontrol, der kan afbryde, står i installationens egen del.
+if ! gsettings set org.gnome.settings-daemon.plugins.power \
+        idle-brightness 45 2>/dev/null; then
+    logger -t livline "ADVARSEL: kunne ikke sætte idle-brightness — \
+dagstyrken bliver GNOMEs standard"
+fi
+
 # LYSSENSOREN SKAL VÆRE SLÅET FRA — og kun den.
 #
 # T470s har en lysføler ved skærmen. Med den tændt følger lysstyrken
@@ -399,9 +467,40 @@ gsettings set org.gnome.desktop.wm.keybindings panel-run-dialog "[]" 2>/dev/null
 gsettings set org.gnome.settings-daemon.plugins.media-keys terminal "[]" 2>/dev/null || true
 # Hot corner fra: markør i øverste hjørne må ikke åbne aktivitetsoversigten
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
-# Lydniveau-kalibrering: fast, hørbart niveau ved hver opstart
-pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null || true
-pactl set-sink-volume @DEFAULT_SINK@ 75% 2>/dev/null || true
+# MASKINEN SKAL VÆRE TAVS — OG DET SKAL SÆTTES, IKKE FORUDSÆTTES.
+#
+# Her stod det modsatte indtil 05.10: lyden blev slået TIL og sat til
+# 75 % ved hver opstart. Det var rigtigt, dengang talebeskeder blev
+# afspillet. Lyden blev fjernet i 4.75 — men disse to linjer blev glemt,
+# og de stod der stadig i tolv versioner. Fundet i en udefrakommende
+# gennemgang af install.sh.
+#
+# Hvorfor det er værre end et levn: skærmen bliver sort kl. 22, men
+# lyden gjorde ikke. En systemlyd kl. 02 ville fylde lejligheden ved
+# 75 %, og han kan ikke skrue ned — volumenknapperne er under papiret.
+# Det er præcis den fejl, lyden blev fjernet for at undgå.
+#
+# Nu: dæmpet og nul. Og det SÆTTES hver opstart, i stedet for at vi håber
+# på, at ingen har rørt det.
+pactl set-sink-mute @DEFAULT_SINK@ 1 2>/dev/null || true
+pactl set-sink-volume @DEFAULT_SINK@ 0% 2>/dev/null || true
+# SKÆRMLÆSEREN SKAL IKKE KUNNE STARTES MED EN GENVEJSTAST.
+#
+# Vi har slået orca-autostart fra, og kommentaren der advarer mod præcis
+# det her: "rammer nogen dens genvejstast, begynder maskinen at TALE — og
+# ingen i stuen ved, hvordan man stopper den igen." Men vi havde kun
+# lukket den ene dør. GNOME har en global genvej (Super+Alt+S), og den
+# starter Orca uanset autostart. Fundet i en udefrakommende gennemgang.
+#
+# Tre hænder kan ramme den: en hjælper, et barnebarn, eller en hånd der
+# glider hen over papiret. Og han kan ikke stoppe den: Orca fanger selv
+# tasterne, og ingen af hans otte gør det.
+#
+# Derfor lukkes BÅDE genvejen og tilgængelighedsindstillingen.
+gsettings set org.gnome.settings-daemon.plugins.media-keys \
+    screen-reader "@as []" 2>/dev/null || true
+gsettings set org.gnome.desktop.a11y.applications \
+    screen-reader-enabled false 2>/dev/null || true
 # Kør terminalen — genstart automatisk hvis den lukker/fejler.
 # Rollback: dør programmet 3 gange i træk inden for 20 sek. (fx efter en
 # fejlslagen /opdater), gendannes den seneste fungerende version (.bak).
@@ -446,27 +545,59 @@ export PYTHONUNBUFFERED=1
 #
 # Findes værktøjet ikke (en maskine uden GNOME), kører appen som før.
 # Så dæmper skærmen måske — men maskinen virker, og det siges i loggen.
-if command -v gnome-session-inhibit >/dev/null 2>&1; then
-    # --inhibit tager EN liste, ikke flere tilvalg. "--inhibit-logout"
-    # findes ikke, og med den stod maskinen og viste skrivebordet, mens
-    # run.sh prøvede at starte appen hvert femte sekund i tavshed.
-    INHIBIT="gnome-session-inhibit --inhibit idle --reason Livline"
-    logger -t livline "Skærmen holdes vågen med gnome-session-inhibit"
-else
-    INHIBIT=""
-    logger -t livline "ADVARSEL: gnome-session-inhibit mangler — skærmen kan dæmpe af sig selv"
-fi
+# INGEN INHIBIT. Fjernet igen i v4.94, og begrundelsen er vigtigere end
+# linjen:
+#
+# gnome-session-inhibit --inhibit idle siger "lad være med at gøre noget,
+# fordi maskinen er uvirksom". Men GNOME's dæmpning ER en
+# uvirksomhedshandling, og dæmpningen er nu selve løsningen: den er den
+# ENE, der bestemmer dagstyrken. Med en inhibitor står skærmen på fuld
+# styrke hele dagen, og så virker idle-brightness ikke.
+#
+# Den var heller ikke årsagen til blinket, som jeg troede i et døgn. Målt
+# 05.10: blinket fortsatte uden den. Årsagen var appens eget kald til
+# org.gnome.ScreenSaver.SetActive hvert 30. sekund — hvert kald tænder
+# panelet i 15 sekunder og bestiller samtidig mørket bagefter. Rettet i
+# appen, ikke her.
+#
+# Lad den ikke komme tilbage uden en måling, der viser, at den hjælper.
 
 FAILS=0
 while true; do
     START=$(date +%s)
     if command -v systemd-cat >/dev/null 2>&1; then
-        systemd-cat -t livline $INHIBIT "$LIVLINE_PY" /opt/livline/livline_bot.py
+        systemd-cat -t livline "$LIVLINE_PY" /opt/livline/livline_bot.py
     else
-        $INHIBIT "$LIVLINE_PY" /opt/livline/livline_bot.py 2>&1 | logger -t livline
+        "$LIVLINE_PY" /opt/livline/livline_bot.py 2>&1 | logger -t livline
     fi
     DUR=$(( $(date +%s) - START ))
-    if [ "$DUR" -lt 20 ]; then FAILS=$((FAILS+1)); else FAILS=0; fi
+    # ET PLANLAGT SKIFT ER IKKE ET NEDBRUD.
+    #
+    # livline-vis dræber appen med vilje for at skifte brugerflade. Skifter
+    # du tre gange i træk — og det gør man netop ved en overlevering, hvor
+    # de tre opsætninger prøves foran den ældre — så så run.sh tre korte
+    # kørsler, kaldte det en crash-loop, og RULLEDE KODEN TILBAGE til .bak
+    # midt i demonstrationen. Med en ⚠️-besked om en mislykket opdatering,
+    # der aldrig havde været der.
+    #
+    # Fundet i en udefrakommende gennemgang 05.10. Den slags fejl opstår,
+    # fordi to rigtige mekanismer ikke kender hinanden.
+    #
+    # Nu lægger livline-vis en seddel, inden den dræber. Der ses på
+    # sedlens TIDSSTEMPEL, ikke blot på om den findes:
+    #
+    #   er den skrevet EFTER denne kørsel begyndte, var drabet med vilje.
+    #
+    # Derfor skal ingen slette den — og det er netop pointen, for /run
+    # ejes af root, mens run.sh kører som kiosk-brugeren og ikke KAN
+    # slette der. En seddel, der skulle fjernes, ville blive liggende og
+    # dække over et rigtigt nedbrud bagefter. (/run ryddes ved genstart,
+    # så den kan heller ikke overleve natten.)
+    FLAG=$(stat -c %Y /run/livline-planlagt 2>/dev/null || echo 0)
+    if [ "$FLAG" -ge "$START" ]; then
+        FAILS=0
+        echo "Livline: kort kørsel, men skiftet var planlagt" | logger -t livline
+    elif [ "$DUR" -lt 20 ]; then FAILS=$((FAILS+1)); else FAILS=0; fi
     if [ "$FAILS" -ge 3 ] && [ -f /opt/livline/livline_bot.py.bak ]; then
         echo "Livline: crash-loop — ruller tilbage til .bak" | logger -t livline
         cp /opt/livline/livline_bot.py.bak /opt/livline/livline_bot.py
@@ -964,7 +1095,20 @@ skift_til() {
         echo "Maskinen står allerede på \"$NYT\". Intet ændret."
         return 0
     fi
-    systemctl stop livline-fortryd.timer 2>/dev/null || true
+    # RYD BÅDE TIMEREN OG TJENESTEN, FØR DER BESTILLES EN NY.
+    #
+    # systemd-run --on-active laver TO enheder: livline-fortryd.timer og
+    # livline-fortryd.service. Vi stoppede kun timeren. Tjenesten blev
+    # liggende som en indlæst enhed — og næste gang man ville skifte net,
+    # afviste systemd bestillingen med "enheden findes allerede". Så
+    # fejlede livline-wifi med "kunne ikke bestille en fortrydelse.
+    # Skifter IKKE", og man stod i en stue uden at kunne skifte net.
+    #
+    # Fundet i en udefrakommende gennemgang 05.10. reset-failed rydder
+    # også en enhed, der er endt i fejl — det er den tilstand, der ellers
+    # overlever længst.
+    systemctl stop livline-fortryd.timer livline-fortryd.service 2>/dev/null || true
+    systemctl reset-failed livline-fortryd.timer livline-fortryd.service 2>/dev/null || true
     if ! systemd-run --unit=livline-fortryd --on-active=300 \
          --description="Livline: saetter nettet tilbage, hvis skiftet ikke virkede" \
          nmcli connection up "$GAMMELT" >/dev/null 2>&1; then
@@ -1247,11 +1391,24 @@ set -euo pipefail
 case "${1:-}" in
   1|knapper) M=faellestraad; B=knapper  ;;
   2|skriv)   M=faellestraad; B=tastatur ;;
-  3|enkelte) M=enkelte;      B=tastatur ;;
-  *) echo "Brug: livline-vis 1|2|3  (eller knapper|skriv|enkelte)"
+  # 3|enkelte ER FJERNET (v4.95). Den satte maskinen i en tilstand, hvor
+  # samtaleskift kræver F2-F12 — og det kræver et TASTATURDÆK med navnene
+  # over de taster. Det dæk findes ikke endnu, så maskinen ville vise navne,
+  # der ikke står nogen steder på papiret foran brugeren.
+  #
+  # En indstilling, der kræver en anden fysisk maskine, må ikke kunne
+  # sættes med én kommando. Se opgave #77 — tilstanden er ikke kasseret.
+  3|enkelte)
+     echo "FEJL: 'enkelte' er slået fra."
+     echo
+     echo "Den kræver et tastaturdæk med navnene over F2-F12, og det"
+     echo "findes ikke endnu. Uden det kan brugeren ikke skifte samtale,"
+     echo "og en besked fra den ene kan ikke hentes frem, når skærmen"
+     echo "står på den anden."
+     exit 1 ;;
+  *) echo "Brug: livline-vis 1|2  (eller knapper|skriv)"
      echo "  1  knapper   faste svar, én fælles samtale"
      echo "  2  skriv     frit skrivefelt, én fælles samtale"
-     echo "  3  enkelte   frit skrivefelt, én samtale pr. person"
      echo
      python3 - <<'NUEOF' || true
 import json, pathlib
@@ -1286,6 +1443,16 @@ os.chmod(t, st.st_mode & 0o7777)
 json.loads(t.read_text())          # vælter her, hvis filen er ufuldstændig
 os.replace(t, p)
 PYEOF
+# SIG TIL RUN.SH, AT DRABET ER MED VILJE.
+#
+# Uden denne seddel tæller run.sh den korte kørsel som et nedbrud. Tre
+# skift i træk — som ved en overlevering, hvor alle tre opsætninger prøves
+# foran den ældre — og koden bliver rullet tilbage til .bak midt i det
+# hele, med en ⚠️ om en mislykket opdatering, der aldrig fandt sted.
+#
+# run.sh ser på sedlens TIDSSTEMPEL, ikke blot om den findes — så ingen
+# behøver at slette den. /run ryddes ved genstart.
+touch /run/livline-planlagt 2>/dev/null || true
 pkill -f livline_bot.py || true
 echo "Opsætning $1 — $M / $B. Skærmen skifter om et par sekunder."
 EOF

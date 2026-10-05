@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.93
+VERSION 4.95
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -151,7 +151,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.93"
+VERSION = "4.95"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -213,6 +213,16 @@ NAT_SLUT = 8              # … og tænder igen kl. 8. Kan sættes pr. maskine
                           # to tal kun betyder noget i forhold til hinanden.
                           # Tallene her er standarden, når feltet mangler
 NAT_TJEK_SEK = 30         # hvor tit maskinen ser på uret
+SKAERM_TJEK_SEK = 10      # hvor tit skærmens tilstand LÆSES. Må gerne være
+                          # tæt: en læsning af en fil koster ingenting. Det
+                          # var ikke læsningerne, der gav blinket, det var
+                          # skrivningerne. Mål ofte, skriv sjældent.
+SKAERM_RETTE_PAUSE = 900  # mindste tid mellem to automatiske rettelser af
+                          # skærmen. Uden den ville en skærm, GNOME slukker
+                          # med vilje, blive vækket hvert 10. sekund — altså
+                          # samme blink, bare med os som den travle part.
+                          # Bliver den ved, er det en fejl, der skal MELDES,
+                          # ikke en, der skal rettes igen og igen.
 NAT_VAEK_SEK = 120        # sekunder skærmen bliver tændt om natten, efter
                           # nogen har rørt en tast. Står hun op kl. 3 og vil
                           # se en besked, skal skærmen ikke slukke igen midt
@@ -301,6 +311,7 @@ class Config:
     update_url: str = ""
     admin_ids: list = field(default_factory=list)  # alle, der må styre botten
     ukendte: list = field(default_factory=list)    # stavefejl i config.json
+    mode_lukket: bool = False    # config bad om "enkelte", som er slået fra
     replies: list = field(default_factory=lambda: list(DEFAULT_REPLIES))
     font_size: int = 28          # "skrift" i config — hæv for svagtseende
     theme: str = "varm"          # "tema": varm|telegram|kontrast|gul|lys|sort|moerk
@@ -351,6 +362,38 @@ class Config:
         mode = raw.get("mode", "faellestraad")
         if mode not in ("faellestraad", "enkelte"):
             raise ValueError(f"Ukendt mode: {mode}")
+        # "enkelte" ER LUKKET AF (v4.95). Den MANGLER SIT TASTATURDÆK.
+        #
+        # Samtaleskift sker med F2-F12, og i enkelte skal dækket have
+        # navnene trykt over netop de taster. Det dæk findes ikke endnu —
+        # vi har kun dækket til fællestråd, hvor F-rækken er lukket til.
+        #
+        # Derfor skal tilstanden være lukket af i SOFTWAREN: /vis enkelte
+        # (v4.93) gjorde det til én kommando at sætte en maskine i en
+        # tilstand, hvor papiret på maskinen er det forkerte. Så ser han
+        # navne, der ikke står nogen steder, og kan ikke komme til
+        # beskeden. En indstilling, der kræver en anden fysisk maskine, må
+        # ikke kunne sættes fra en telefon.
+        #
+        # To udefrakommende gennemgange 05.10 kaldte tilstanden ubrugelig.
+        # De byggede på min egen beskrivelse, hvor dækket var beskrevet som
+        # ÉT dæk. Slutningen var logisk; præmissen var min fejl.
+        #
+        # Der kastes IKKE en fejl. En maskine i drift må ikke nægte at
+        # starte, fordi et felt i config er blevet forkert — så står der
+        # et tomt skrivebord i en stue. Der falder tilbage til
+        # faellestraad, og det siges højt både i loggen og til
+        # administrator ved opstart.
+        #
+        # Tilstanden er ikke kasseret, og F-tast-koden er bevaret. Den
+        # ligner den gamle løsning, der fungerer godt. Se opgave #77 for,
+        # hvad der skal løses, før den kan komme igen.
+        mode_lukket = mode == "enkelte"
+        if mode_lukket:
+            log.warning('"mode": "enkelte" er slået fra — den kræver et '
+                        "tastaturdæk med navnene over F-tasterne, og det "
+                        "findes ikke endnu. Bruger faellestraad i stedet.")
+            mode = "faellestraad"
 
         # "betjening" bestemmer, hvordan brugeren svarer. Knapper og
         # skrivefelt udelukker hinanden som standard, så skærmen kun viser
@@ -385,6 +428,7 @@ class Config:
                                         "/var/lib/livline/whitelist.json")),
             update_url=raw.get("update_url", ""),
             ukendte=sorted(set(raw) - KENDTE_FELTER),
+            mode_lukket=mode_lukket,
             replies=svar,
             keys=taster,
             show_buttons=bool(raw.get("vis_knapper", False)),
@@ -461,42 +505,67 @@ class Whitelist:
     """chat_id (int) -> visningsnavn. Rækkefølgen bestemmer F-tasterne.
     Persisteres så /tilfoej overlever genstart."""
 
+    # LÅSEN: listen læses af UI-tråden og ændres af bot-tråden.
+    #
+    # /tilfoej og /fjern kommer fra bot-tråden, mens UI-tråden samtidig
+    # bygger samtalelisten eller henter modtagere til et svar. Uden lås
+    # kan en modtagerliste blive ufuldstændig, eller en gennemgang kan
+    # vælte midt i. Risikoen er lille, fordi ids() og items() returnerer
+    # kopier — men "lille" er ikke "nul", og låsen koster fem linjer.
+    #
+    # Påpeget i en udefrakommende gennemgang 05.10.
     def __init__(self, path: Path):
         self.path = path
+        self._laas = threading.Lock()
         self._d: dict[int, str] = {}
         if path.exists():
             self._d = {int(k): v for k, v in
                        json.loads(path.read_text(encoding="utf-8")).items()}
 
     def __contains__(self, chat_id: int) -> bool:
-        return chat_id in self._d
+        with self._laas:
+            return chat_id in self._d
 
     def get(self, chat_id: int, default: str = "?") -> str:
-        return self._d.get(chat_id, default)
+        with self._laas:
+            return self._d.get(chat_id, default)
 
     def items(self):
-        return list(self._d.items())
+        with self._laas:
+            return list(self._d.items())
 
     def ids(self) -> list[int]:
-        return list(self._d.keys())
+        with self._laas:
+            return list(self._d.keys())
 
     def __len__(self):
-        return len(self._d)
+        with self._laas:
+            return len(self._d)
 
     def add(self, chat_id: int, name: str) -> None:
-        self._d[chat_id] = name
-        self._save()
+        with self._laas:
+            self._d[chat_id] = name
+            kopi = dict(self._d)
+        self._save(kopi)
 
     def remove(self, chat_id: int) -> bool:
-        if chat_id in self._d:
+        with self._laas:
+            if chat_id not in self._d:
+                return False
             del self._d[chat_id]
-            self._save()
-            return True
-        return False
+            kopi = dict(self._d)
+        self._save(kopi)
+        return True
 
-    def _save(self) -> None:
+    def _save(self, kopi: dict[int, str]) -> None:
+        """Skriver UDEN at holde låsen — og på en kopi, ikke på listen selv.
+
+        Skrivningen går til disken og kan tage tid. Holdt den låsen, ville
+        UI-tråden stå stille imens, og det er netop skærmen, der skal være
+        hurtig. Kopien laves inde i låsen, så filen altid svarer til en
+        tilstand, der FANDTES."""
         skriv_sikkert(self.path,
-                      json.dumps({str(k): v for k, v in self._d.items()},
+                      json.dumps({str(k): v for k, v in kopi.items()},
                                  ensure_ascii=False, indent=2))
 
 # ----------------------------------------------------------------------------
@@ -517,6 +586,12 @@ class Incoming:
 # ----------------------------------------------------------------------------
 
 _historik_laas = threading.Lock()
+# Sat, når en skrivning til historikken fejlede. Læses af _poll_inbox, som
+# melder det til administrator ÉN gang — en besked, der kun findes på
+# skærmen, er tabt ved næste genstart, og det er den slags, ingen opdager.
+# En liste frem for en variabel, fordi den sættes i bot-trådens kode og
+# læses i UI-tråden; en liste kan deles uden at skulle hentes ind igen.
+_historik_fejl: list[str] = []
 
 
 def gem_i_historik(sti: Path, m: "Incoming", egen: bool = False) -> None:
@@ -537,18 +612,88 @@ def gem_i_historik(sti: Path, m: "Incoming", egen: bool = False) -> None:
     Selve skrivningen er atomisk (os.replace); det er læsningen forinden,
     der ikke var beskyttet."""
     with _historik_laas:
+        rows = []
+        # EN BESKADIGET FIL MÅ IKKE SPÆRRE FOR AL FREMTIDIG SKRIVNING.
+        #
+        # Her blev læsning og skrivning fanget af ÉN except. Kunne filen
+        # ikke læses — en syntaksfejl, en afbrudt skrivning, eller en
+        # JSON-ordbog i stedet for en liste — fejlede læsningen, og
+        # funktionen gik ud UDEN at skrive den nye besked. Hver gang. Hele
+        # dagen.
+        #
+        # Maskinen ser upåklagelig ud: beskederne står på skærmen, og
+        # familien får svar. Men NÆSTE NAT KL. 3 genstarter den, og så er
+        # alt, der kom ind efter skaden, væk. Og det opdages ikke engang
+        # dér — skærmen viser blot en kortere samtale.
+        #
+        # Nu: kan filen ikke læses, lægges den til side med et nyt navn,
+        # og der startes en ny. Så mister vi det gamle (det var allerede
+        # ulæseligt), men ikke alt det, der kommer bagefter. Og filen er
+        # gemt, så den kan kigges på hjemmefra.
+        #
+        # Fundet i en udefrakommende gennemgang 05.10.
         try:
-            rows = []
             if sti.exists():
                 rows = json.loads(sti.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError(f"historikken er en {type(rows).__name__}, "
+                                 "ikke en liste")
+        except Exception as e:
+            log.error("Historikken kunne ikke læses (%s) — lægger den til "
+                      "side og starter en ny", e)
+            rows = []
+            try:
+                sti.replace(sti.with_suffix(
+                    ".beskadiget-" + datetime.now().strftime("%Y%m%d-%H%M%S")))
+            except Exception as e2:
+                log.warning("Kunne ikke lægge den beskadigede historik til "
+                            "side: %s", e2)
+        try:
             rows.append({"navn": m.sender_name, "chat_id": m.chat_id,
                          "type": m.kind, "tekst": m.text,
                          "fil": str(m.file_path) if m.file_path else None,
                          "tid": m.received.isoformat(), "egen": egen})
             skriv_sikkert(sti,
                           json.dumps(rows[-HISTORY_MAX:], ensure_ascii=False))
+            _historik_fejl.clear()
         except Exception as e:
-            log.warning("Kunne ikke gemme historik: %s", e)
+            # EN BESKED, DER KUN FINDES PÅ SKÆRMEN, ER TABT VED NÆSTE
+            # GENSTART. Det skal siges — ikke kun til loggen, som ingen
+            # læser, før noget er gået galt.
+            log.error("Kunne ikke gemme historik: %s", e)
+            _historik_fejl.append(str(e))
+
+
+def markér_ikke_sendt(sti: Path, tid_iso: str) -> None:
+    """Skriver i historikken, at ET svar ikke nåede frem.
+
+    HVORFOR DET SKAL GEMMES: den røde markering på boblen fandtes kun i
+    det kørende vindue. Maskinen genstarter kl. 3, samtalen tegnes forfra
+    fra historikken — og så stod svaret der som et helt almindeligt sendt
+    svar. Han kunne se ud til at have svaret, mens familien aldrig fik
+    beskeden, og ingen af parterne kunne se hvorfor.
+
+    Fundet i en udefrakommende gennemgang 05.10.
+
+    Der søges på tidsstemplet, fordi det er det eneste, der med
+    sikkerhed hører til netop den boble: to ens svar et minut fra
+    hinanden ville ellers ikke kunne skelnes."""
+    with _historik_laas:
+        try:
+            if not sti.exists():
+                return
+            rows = json.loads(sti.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                return
+            for r in reversed(rows):
+                if r.get("tid") == tid_iso and r.get("egen"):
+                    r["sendt"] = False
+                    break
+            else:
+                return
+            skriv_sikkert(sti, json.dumps(rows, ensure_ascii=False))
+        except Exception as e:
+            log.warning("Kunne ikke gemme, at et svar ikke nåede frem: %s", e)
 
 
 class BotWorker:
@@ -702,6 +847,12 @@ class BotWorker:
             if self.config.ukendte:
                 besked += ("\n⚠️ Ukendte felter i config (stavefejl?): "
                            + ", ".join(self.config.ukendte))
+            if self.config.mode_lukket:
+                besked += ("\n⚠️ Config beder om \"enkelte\", men den "
+                           "tilstand er slået fra: den kræver et "
+                           "tastaturdæk med navnene over F-tasterne, og "
+                           "det findes ikke endnu. Maskinen kører "
+                           "faellestraad.")
             if not self.config.replies and not self.config.text_input:
                 besked += ("\n⚠️ Brugeren kan ikke svare: hverken faste svar "
                            "eller skrivefelt er slået til.")
@@ -939,7 +1090,6 @@ class BotWorker:
     OPSAETNINGER = {
         "knapper": "faste svar, én fælles samtale",
         "skriv": "frit skrivefelt, én fælles samtale",
-        "enkelte": "frit skrivefelt, én samtale pr. person",
     }
 
     async def _cmd_vis(self, update: Update, ctx):
@@ -955,11 +1105,22 @@ class BotWorker:
         tokenet står i den, og en app, der kan skrive i sin egen config,
         kan også pege opdateringer et andet sted hen. I stedet kaldes
         livline-vis gennem en sudoers-linje, der kun tillader netop det
-        ene script."""
+        ene script.
+
+        HVAD KOMMANDOEN ER, OG HVAD DEN IKKE ER — Ulriks præcisering
+        05.10: "de skal alligevel guides, lige meget hvad."
+
+        Et skift af brugerflade er ikke en indstilling, man skruer på
+        hjemmefra. Nogen skal forklare ham, at tasterne nu gør noget
+        andet, og den samtale har familien i forvejen. Kommandoen er
+        altså det SIDSTE lille greb i et skift, der allerede er aftalt —
+        ikke en knap til at prøve noget af på afstand.
+
+        Derfor står påmindelsen om tastaturdækket nedenfor som en linje i
+        svaret og ikke som en spærring: dækket er en detalje i en samtale,
+        der skal finde sted alligevel."""
         reply = update.effective_message.reply_text
         nu = "skriv" if self.config.text_input else "knapper"
-        if self.config.mode == "enkelte":
-            nu = "enkelte"
         arg = (ctx.args[0].lower() if ctx.args else "")
 
         if not arg:
@@ -982,8 +1143,49 @@ class BotWorker:
                         f"({self.OPSAETNINGER[arg]}). Intet ændret.")
             return
 
-        await reply(f"🖥 Skifter til '{arg}' — {self.OPSAETNINGER[arg]}.\n"
-                    "Skærmen bliver sort et øjeblik, mens appen starter igen.")
+        # ET SKIFT I SOFTWAREN KRÆVER ET SKIFT PÅ MASKINEN.
+        #
+        # Tastaturdækket til fællestråd dækker ALLE taster på nær de otte.
+        # Skifter man til skrivefelt uden at tage det af, kan han kun
+        # skrive q, x, t, n og o — et frit skrivefelt med fem bogstaver er
+        # ikke en brugerflade, det er en blindgyde. Og den anden vej:
+        # skifter man til faste svar uden at sætte dækket PÅ, står der
+        # ingen tekster over tasterne.
+        #
+        # Der spærres IKKE for skiftet. Dækket kan pilles af med en finger,
+        # så en lås ville være en ny måde at sidde fast på — for en
+        # situation, der kan løses i stuen. Men kommandoen skal SIGE det,
+        # for det er dig, der skal bede dem om det, og du står ikke der.
+        #
+        # Fundet i en udefrakommende gennemgang 05.10. Samme fejltype som
+        # enkelte-tilstanden: softwaren kan komme i en tilstand, der ikke
+        # passer til papiret på maskinen.
+        # OG SIG, AT DET KAN FORTRYDES.
+        #
+        # Ulriks arbejdsgang, 05.10: bliver han bedre, ringer de sammen,
+        # familien tager dækket af, og tilstanden skiftes fra telefonen.
+        # Går det ikke, sætter de dækket på igen, og den anden kommando
+        # ruller det tilbage.
+        #
+        # Begge halvdele kan fortrydes PÅ ET SEKUND — papiret med en
+        # finger, tilstanden fra en telefon. Det gør det til et forsøg i
+        # stedet for en beslutning, og et forsøg, man kan fortryde, tør
+        # man lave. Derfor skal sætningen med: i det øjeblik, hvor man
+        # står i telefonen med familien, er det den, der afgør, om de tør
+        # prøve.
+        tilbage = "knapper" if arg == "skriv" else "skriv"
+        daek = ("\n\n⌨️ Bed familien TAGE TASTATURDÆKKET AF. Uden det kan "
+                "han kun skrive q, x, t, n og o."
+                if arg == "skriv" else
+                "\n\n⌨️ Bed familien SÆTTE TASTATURDÆKKET PÅ igen, så "
+                "teksterne står over tasterne.")
+        await reply(f"🖥 Skifter til '{arg}' — {self.OPSAETNINGER[arg]}."
+                    + daek +
+                    "\n\nVirker det ikke, så sæt papiret tilbage og skriv "
+                    f"/vis {tilbage}. Det tager et øjeblik begge veje, så "
+                    "det må gerne bare prøves."
+                    "\n\nSkærmen bliver sort et øjeblik, mens appen "
+                    "starter igen.")
         try:
             # -n: fejl med det samme i stedet for at vente på et kodeord,
             # ingen kan skrive. Mangler sudoers-linjen, skal det siges —
@@ -1200,6 +1402,25 @@ class BotWorker:
 
     # -- indgående beskeder --------------------------------------------------------
 
+    def _videresendt_linje(self) -> str:
+        """Linjen om, at beskeden er sendt videre — kun hvis den ER det.
+
+        Her stod teksten "Jeg har sendt den videre til de andre i familien"
+        fast i både video- og talebeskedsvaret. Men videresendelsen sker
+        kun i fællestråd. Stod maskinen i enkelte, fik afsenderen altså at
+        vide, at noget var sendt videre, som ikke var sendt nogen steder.
+
+        Fundet i en udefrakommende gennemgang 05.10. Det er den slags,
+        prøverne ikke kan fange: koden gjorde præcis, hvad den skulle —
+        teksten var bare usand.
+
+        Og den er ikke kun en detalje: en pårørende, der tror, de andre
+        har set videoen, skriver ikke til dem. Så er der tre, der venter
+        på hinanden."""
+        if self.config.mode == "faellestraad" and len(self.whitelist) > 1:
+            return "Jeg har sendt den videre til de andre i familien.\n"
+        return ""
+
     async def _meld_ukendt(self, bot, chat_id: int, sender: str) -> None:
         """Fortæller administrator, at en ukendt person har henvendt sig.
 
@@ -1212,7 +1433,6 @@ class BotWorker:
         med at skrive, fylde administrators telefon med advarsler."""
         if chat_id in self.config.admin_ids or chat_id in self._notified_unknown:
             return
-        self._notified_unknown.add(chat_id)
         # Godkendelse med ÉT TRYK.
         # Før stod der blot "Godkend med: /tilfoej <id> <navn>" som tekst.
         # Telegram gør automatisk /tilfoej til et trykbart link, og et tryk
@@ -1233,8 +1453,15 @@ class BotWorker:
                 f"Tryk på knappen for at godkende, eller skriv selv:\n"
                 f"/tilfoej {chat_id} Mor",
                 reply_markup=knap)
+            # MÆRKET SÆTTES FØRST, NÅR ALARMEN ER UDE. Samme fejl som i
+            # _meld_afsendelsesfejl: stod det før forsøget, blev personen
+            # husket som "meldt", selv om du aldrig fik beskeden — og hun
+            # ville aldrig blive godkendt, uanset hvor mange gange hun
+            # skrev. Hun fik tilmed et svar om, at der var givet besked.
+            self._notified_unknown.add(chat_id)
         except Exception as e:
-            log.warning("Kunne ikke melde ukendt person til admin: %s", e)
+            log.warning("Kunne ikke melde ukendt person til admin: %s — "
+                        "prøver igen næste gang hun skriver", e)
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/start — det knappen i Telegram hedder, når man åbner en bot.
@@ -1288,12 +1515,69 @@ class BotWorker:
 
         name = self.whitelist.get(chat_id)
 
+        # EN RETTET BESKED SKAL SIGE, AT DEN ER EN RETTELSE.
+        #
+        # Målt med en rigtig Update 05.10: en rettelse RAMMER denne
+        # funktion — effective_message dækker også edited_message. Så den
+        # bliver ikke ignoreret, som en gennemgang ellers antog.
+        #
+        # Men den kommer ind som en HELT NY besked. Datteren skriver "vi
+        # henter dig kl. 16", opdager at hun mente 15, og retter den på
+        # sin telefon. På skærmen står der nu to bobler: 16 og 15. Intet
+        # siger, at den sidste er en rettelse af den første.
+        #
+        # For en mand med hukommelsesbesvær er to tidspunkter værre end
+        # ét forkert. Han kan handle på den øverste.
+        #
+        # Nu står der "Rettet:" foran, og de øvrige i tråden får samme
+        # oplysning. Den gamle boble bliver stående — vi fjerner ikke
+        # noget fra skærmen, han kan have læst.
+        rettet = update.edited_message is not None
+        if rettet:
+            log.info("Rettet besked fra %s", name)
+
         if msg.text:
-            self._modtag(Incoming(name, chat_id, "text", text=msg.text))
+            tekst = ("Rettet: " + msg.text) if rettet else msg.text
+            self._modtag(Incoming(name, chat_id, "text", text=tekst))
+            if self.config.mode == "faellestraad" and rettet:
+                await self._rebroadcast(
+                    msg, name, exclude=chat_id,
+                    note=f"rettede sin besked til: {msg.text}")
+                return
         elif msg.photo:
-            path = await self._download(msg.photo[-1].file_id, context, ".jpg")
-            self._modtag(Incoming(name, chat_id, "photo",
-                                  text=msg.caption or "", file_path=path))
+            # ET BILLEDE MÅ IKKE FORSVINDE, FORDI DOWNLOADEN FEJLEDE.
+            #
+            # Her stod kaldet uden værn. Røg nettet midt i hentningen, blev
+            # disken fuld, eller svarede Telegram med en fejl, kastede
+            # _download en undtagelse — FØR _modtag blev kaldt. Så kom
+            # billedet hverken i historikken, på skærmen eller videre til
+            # de øvrige i fællestråden. Hun ser "leveret" på sin telefon.
+            # Han ser ingenting. Og der kom ingen alarm, for ingen fangede
+            # fejlen.
+            #
+            # Nu: beskeden kommer frem uanset hvad. Lykkedes billedet ikke,
+            # står der en linje om det, og administrator får det at vide —
+            # for det er ham, der kan gøre noget.
+            try:
+                path = await self._download(msg.photo[-1].file_id,
+                                            context, ".jpg")
+                self._modtag(Incoming(name, chat_id, "photo",
+                                      text=msg.caption or "", file_path=path))
+            except Exception as e:
+                log.warning("Billedet fra %s kunne ikke hentes: %s", name, e)
+                besked = msg.caption or ""
+                self._modtag(Incoming(
+                    name, chat_id, "text",
+                    text=(f"({name} sendte et billede "
+                          f"— det kunne ikke hentes)"
+                          + (f"\n{besked}" if besked else ""))))
+                self.send_admin(
+                    f"⚠️ Et billede fra {name} kunne ikke hentes ned på "
+                    f"{self.config.machine_name}.\n"
+                    f"Grund: {e}\n\n"
+                    f"Der står en linje på skærmen om det, så han ved, at "
+                    f"hun har sendt noget. Men billedet er væk — bed hende "
+                    f"sende det igen.")
         elif msg.voice or msg.audio:
             # TALEBESKEDER AFSPILLES IKKE LÆNGERE. Samme begrundelse som
             # video, og truffet samme dag.
@@ -1318,7 +1602,7 @@ class BotWorker:
                 await msg.reply_text(
                     f"🎙 {hvad.capitalize()}en kan desværre ikke afspilles "
                     f"på Livline-skærmen.\n"
-                    f"Jeg har sendt den videre til de andre i familien.\n"
+                    + self._videresendt_linje() +
                     f"Skriv gerne et par ord i stedet.")
             except Exception as e:
                 log.warning("Kunne ikke svare om talebesked til %s: %s",
@@ -1349,7 +1633,7 @@ class BotWorker:
                 await msg.reply_text(
                     "🎬 Videoen kan desværre ikke vises på "
                     "Livline-skærmen.\n"
-                    "Jeg har sendt den videre til de andre i familien.\n"
+                    + self._videresendt_linje() +
                     "Skriv gerne et par ord om, hvad den viser.")
             except Exception as e:
                 log.warning("Kunne ikke svare om video til %s: %s", chat_id, e)
@@ -1364,9 +1648,30 @@ class BotWorker:
                     "en fil" if msg.document else
                     "et sted på kortet" if msg.location else
                     "et kontaktkort" if msg.contact else
-                    "en musikfil" if msg.audio else None)
+                    "en musikfil" if msg.audio else
+                    "en afstemning" if msg.poll else
+                    "et sted, der opdateres" if msg.location else None)
+            # INGEN BESKED MÅ FORSVINDE, FORDI VI IKKE KENDTE DEN.
+            #
+            # Her stod "if hvad is None: return". Kom der en beskedtype, vi
+            # ikke havde på listen — en afstemning, en live-lokation, et
+            # spil, noget Telegram tilføjer næste år — skete der INGENTING.
+            # Ingen linje på skærmen, intet i historikken, ingen
+            # videresendelse, ingen alarm.
+            #
+            # Sønnen sender en afstemning: "hvem tager kage med søndag?"
+            # Han tror, alle har set den. Tråden er brudt, og ingen kan se
+            # hvorfor.
+            #
+            # Fundet af TO udefrakommende gennemgange uafhængigt af
+            # hinanden 05.10. Når to læsere finder det samme, er det ikke
+            # en detalje.
+            #
+            # Listen ovenfor er til at give beskeden et NAVN. Mangler
+            # navnet, siges det bare mere løst — men det siges.
             if hvad is None:
-                return
+                hvad = "noget, skærmen ikke kan vise"
+                log.info("Ukendt beskedtype fra %s — vist som en linje", name)
             self._modtag(Incoming(name, chat_id, "text",
                                   text=f"({name} sendte {hvad})"))
             # HER STOD ET return. Skærmen fik sin linje, men de ØVRIGE i
@@ -1480,7 +1785,6 @@ class BotWorker:
         er slukket i en uge, må ikke fylde administrators skærm."""
         if chat_id in self._send_fejl or chat_id in self.config.admin_ids:
             return
-        self._send_fejl.add(chat_id)
         navn = self.whitelist.get(chat_id) or str(chat_id)
         try:
             await self.app.bot.send_message(
@@ -1493,8 +1797,19 @@ class BotWorker:
                 f"bed hende åbne samtalen med botten og ophæve blokeringen.\n\n"
                 f"Meldes kun én gang — næste melding kommer først, når det "
                 f"har virket igen i mellemtiden.")
+            # MÆRKET SÆTTES FØRST, NÅR ALARMEN ER UDE.
+            #
+            # Det stod før øverst i funktionen. Fejlede alarmen — fordi din
+            # egen telefon var uden net i netop det sekund — blev
+            # modtageren alligevel husket som "meldt". Og så kom alarmen
+            # ALDRIG. Alarmen om en tavs fejl blev selv tavs, permanent.
+            #
+            # Fundet i en udefrakommende gennemgang 05.10. Det samme stod
+            # i _meld_ukendt, og er rettet dér på samme måde.
+            self._send_fejl.add(chat_id)
         except Exception as e:
-            log.warning("Kunne ikke melde afsendelsesfejl til admin: %s", e)
+            log.warning("Kunne ikke melde afsendelsesfejl til admin: %s — "
+                        "prøver igen næste gang", e)
 
     def send_text(self, chat_ids: list[int], text: str, svar=None) -> None:
         """Sender og RAPPORTERER resultatet tilbage via svar(ok: bool).
@@ -1506,6 +1821,27 @@ class BotWorker:
             return
 
         async def send_alle():
+            # "MINDST ÉN" ER MED VILJE — og det er værd at forklare, fordi
+            # en gennemgang 05.10 kaldte det en fejl.
+            #
+            # Indvendingen: i fællestråd markeres boblen ikke, hvis én af
+            # tre modtagere ikke fik beskeden. Det er rigtigt. Men boblen
+            # svarer på det spørgsmål, HAN kan stille: "kom min besked
+            # af sted?" Og nåede den to af tre, er svaret ja.
+            #
+            # Hvis en pårørende har blokeret botten, ville en rød
+            # markering komme på HVER besked, resten af året. Så ville
+            # han sidde med en skærm, der hele tiden siger, at noget er
+            # galt — om noget han ikke kan gøre noget ved, og som han
+            # ikke kan trykke væk. Det er præcis den slags, denne maskine
+            # ikke må gøre.
+            #
+            # Den, der KAN gøre noget, er administrator. Han får en ⚠️ pr.
+            # person (se _meld_afsendelsesfejl), og den er ikke tavs.
+            #
+            # Den røde markering er derfor forbeholdt det tilfælde, hvor
+            # beskeden ikke nåede NOGEN. Der er den sand, og der kan han
+            # gøre noget: prøve igen.
             ok = False
             for cid in chat_ids:
                 try:
@@ -1518,7 +1854,21 @@ class BotWorker:
                     await self._meld_afsendelsesfejl(cid, e)
             return ok
 
-        fremtid = asyncio.run_coroutine_threadsafe(send_alle(), self.loop)
+        # BOT-LAGET KAN DØ MELLEM TJEKKET OVENFOR OG KALDET HER.
+        #
+        # Vinduet er lille — botten genstarter sig selv ved en netfejl —
+        # men rammer man det, kastede kaldet en fejl, der røg ud af
+        # funktionen. Så var boblen allerede tegnet på skærmen, og den fik
+        # aldrig sin røde markering: beskeden så sendt ud og var det ikke.
+        #
+        # Fundet i en udefrakommende gennemgang 05.10.
+        try:
+            fremtid = asyncio.run_coroutine_threadsafe(send_alle(), self.loop)
+        except Exception as e:
+            log.warning("Kunne ikke sætte afsendelsen i gang: %s", e)
+            if svar:
+                svar(False)
+            return
         if svar:
             # Svaret hentes af en timer-tråd — og svar() må derfor ALDRIG
             # røre Tkinter direkte. Den, der kalder send_text, lægger
@@ -1965,6 +2315,16 @@ class LivlineUI:
         #
         # Skrivefeltet har sin egen binding, som både sender og kvitterer;
         # den her gælder kun, når der ikke er noget felt.
+        # ENTER BINDES PÅ VINDUET I BEGGE TILFÆLDE.
+        #
+        # Før hang Enter KUN på skrivefeltet, når der var et. Flyttede
+        # fokus sig væk — fx fordi en hånd ramte Tab gennem papiret —
+        # gjorde Enter ingenting, og han kunne hverken skrive eller
+        # kvittere. Ingen mus til at klikke sig tilbage.
+        #
+        # Feltets egen binding returnerer "break" og standser dermed
+        # videresendelsen, så der sker kun én ting, når fokus er i feltet.
+        # Vinduets binding er sikkerhedsnettet for alle andre tilfælde.
         if self.entry is None:
             self.root.bind("<Return>",
                            lambda e: self._kvitter(self.selected
@@ -1972,6 +2332,13 @@ class LivlineUI:
             self.root.bind("<KP_Enter>",
                            lambda e: self._kvitter(self.selected
                                                    or self.last_sender))
+        else:
+            self.root.bind("<Return>", lambda e: self._enter_uden_fokus())
+            self.root.bind("<KP_Enter>", lambda e: self._enter_uden_fokus())
+            # Tab må ikke kunne flytte fokus ud af feltet. Den ligger under
+            # papiret, men papiret er tape og en finger er en finger.
+            for t in ("<Tab>", "<ISO_Left_Tab>", "<Shift-Tab>"):
+                self.root.bind(t, lambda e: "break")
         # Pil op/ned scroller i beskederne (erstatter xbindkeys-hack fra 2.1.6)
         self.root.bind("<Up>", lambda e: self._scroll(-1))
         self.root.bind("<Down>", lambda e: self._scroll(1))
@@ -2017,6 +2384,10 @@ class LivlineUI:
         self._idle_check()
         self._vindue_vagt()
         self._nat_vagt()
+        # Skærmvagten kører for sig, og tættere end nattevagten: den LÆSER
+        # hvert 10. sekund, mens nattevagten passer uret hvert 30. En
+        # læsning er gratis; det var skrivningerne, der kostede fem dage.
+        self._skaerm_tjek()
         if self.entry is not None:
             self._autosend_check()
         self.root.mainloop()
@@ -2095,10 +2466,14 @@ class LivlineUI:
             if r.get("egen"):          # brugerens eget svar — højrestillet
                 try:
                     tid = datetime.fromisoformat(r["tid"])
-                    self._boble(r.get("tekst", ""),
-                                f"kl. {tid.strftime('%H.%M')} "
-                                f"{self._day_label(tid).lower()}",
-                                None, egen=True)
+                    boble = self._boble(r.get("tekst", ""),
+                                        f"kl. {tid.strftime('%H.%M')} "
+                                        f"{self._day_label(tid).lower()}",
+                                        None, egen=True)
+                    # Også ved opstart: et svar, der ikke nåede frem, skal
+                    # stadig se ud som et svar, der ikke nåede frem.
+                    if r.get("sendt") is False:
+                        self._tegn_sendefejl(boble, False)
                 except Exception as e:
                     log.warning("Sprang eget svar over i historikken: %s", e)
                 continue
@@ -2195,7 +2570,23 @@ class LivlineUI:
             self.root.attributes("-topmost", True)
             self.root.attributes("-fullscreen", True)
             self.root.lift()
-            if self.entry is not None and self.root.focus_get() is None:
+            # FOKUS HENTES ALTID HJEM TIL SKRIVEFELTET.
+            #
+            # Her stod "hvis focus_get() er None". Det fangede kun det ene
+            # tilfælde, hvor INTET havde fokus. Men Tab flytter fokus til
+            # næste widget — og så er focus_get() ikke None, den peger blot
+            # et sted, hvor Enter ikke gør noget.
+            #
+            # Konsekvensen i en stue: en rystende hånd rammer Tab gennem
+            # papiret. Markøren forsvinder fra feltet. Nu kan han hverken
+            # skrive eller kvittere, og der er ingen mus til at klikke sig
+            # tilbage. Skærmen er låst, til maskinen genstarter kl. 3.
+            #
+            # Samme regel som vinduet og skærmen: SÆT tilstanden, mål den
+            # ikke. Der er kun ét sted, fokus hører hjemme.
+            #
+            # Fundet i en udefrakommende gennemgang 05.10.
+            if self.entry is not None and self.root.focus_get() is not self.entry:
                 self.entry.focus_set()
             self._skjul_markoer()
         except tk.TclError:
@@ -2266,19 +2657,52 @@ class LivlineUI:
         nat = self._er_nat()
         foer = getattr(self, "_nat_nu", None)
         try:
-            # SKÆRMEN SÆTTES HVER RUNDE — der spørges ikke, om den allerede
-            # står rigtigt. Samme regel som vinduesvagten, og af samme
-            # grund: den farlige fejl er en skærm, der bliver sort om
-            # morgenen, for så ligner maskinen en, der er død, og familien
-            # ringer ikke — de tror bare, den er gået i stykker. Fejler et
-            # kald, retter næste runde det et halvt minut senere.
+            # DER SKRIVES KUN, NÅR NOGET SKAL ÆNDRES — eller når vi har MÅLT,
+            # at skærmen står forkert.
+            #
+            # Før satte denne funktion skærmen hver runde, uden at spørge.
+            # Begrundelsen var god: den farlige fejl er en skærm, der er
+            # sort om morgenen, for så ligner maskinen en, der er død, og
+            # familien ringer ikke — de tror bare, den er gået i stykker.
+            #
+            # MEN DET VAR SELVE KALDET, DER SLUKKEDE SKÆRMEN. Målt 05.10 på
+            # to maskiner: ét "SetActive false" på en session, der ikke har
+            # haft input i timevis, tænder panelet i præcis 15 sekunder — og
+            # så lægger GNOME sit skjold tilbage. Vi bad om lys hvert 30.
+            # sekund og bestilte mørke hver gang, vi gjorde det. Resultat:
+            # 15 sekunder tændt, 15 slukket, hele dagen.
+            #
+            # Maskine 01, der kørte v4.81 uden dette kald, har aldrig haft
+            # fejlen. Prøven var at lægge 4.81 på en maskine, der blinkede:
+            # blinket stoppede med det samme.
+            #
+            # Samme fejl ramte lysstyrken først (4.80): appen skrev fuld
+            # styrke hvert halve minut, GNOME dæmpede imellem, og lyset
+            # vandrede. Det er ét og samme problem — appen skrev en tilstand
+            # i stedet for at se, om der var noget at rette.
+            #
+            # Nu: kald ved SKIFT, og ellers kun efter en måling.
             #
             # Om natten vækkes skærmen af et tastetryk og slukker igen efter
             # NAT_VAEK_SEK uden aktivitet.
             vaagen = (not nat) or (time.monotonic() - self._last_key
                                    < NAT_VAEK_SEK)
-            self._panel(vaagen)
-            self._baglys(None if vaagen else 0)
+            if not hasattr(self, "_vaagen_nu"):
+                # FØRSTE RUNDE EFTER OPSTART: begynd fra det, der FAKTISK
+                # er, ikke fra None.
+                #
+                # Med None som udgangspunkt ville første runde altid gå ind
+                # i skifte-grenen og sende et kald — også når skærmen stod
+                # helt rigtigt. Starter appen midt på dagen efter en
+                # opdatering eller et nedbrud, er det netop den unødige
+                # skrivning, vi lige har fjernet 2.880 af. Fundet i en
+                # udefrakommende gennemgang af denne rettelse, en time efter
+                # jeg skrev den.
+                er = self._skaerm_laest()
+                self._vaagen_nu = er if er is not None else vaagen
+            if vaagen != self._vaagen_nu:
+                self._vaagen_nu = vaagen
+                self._skift_skaerm(vaagen)
 
             if nat != foer:
                 self._nat_nu = nat
@@ -2299,6 +2723,124 @@ class LivlineUI:
         except tk.TclError:
             return
         self.root.after(NAT_TJEK_SEK * 1000, self._nat_vagt)
+
+    def _skaerm_laest(self) -> bool | None:
+        """Læser om panelet faktisk lyser. True = tændt, None = kan ikke læses.
+
+        bl_power er 0, når baglyset er tændt, og 4, når det er slukket.
+        Filen kan læses af alle; kun skrivning kræver gruppen "video".
+
+        BEGRÆNSNING, der skal stå her: den siger kun noget om LAMPEN. GNOME
+        kan lægge et sort skjold hen over billedet med baglyset tændt, og så
+        svarer denne funktion "tændt", mens skærmen ser sort ud. Vi har ikke
+        fundet en måde at læse skjoldet (og /skaerm er afvist af GNOME på
+        26.04 — se opgave #74). Så den fanger en slukket skærm, ikke en sort."""
+        try:
+            import glob
+            for sti in glob.glob("/sys/class/backlight/*/bl_power"):
+                return Path(sti).read_text().strip() == "0"
+        except Exception as e:
+            if not getattr(self, "_laes_fejl", 0):
+                log.warning("Kunne ikke læse bl_power (%s)", e)
+            self._laes_fejl = getattr(self, "_laes_fejl", 0) + 1
+        return None
+
+    def _skift_skaerm(self, vaagen: bool) -> None:
+        """Det ENE sted, hvor skærmens tilstand ændres med vilje.
+
+        Om morgenen: væk panelet, og lad ellers GNOME eje lysstyrken.
+        Vi skriver kun baggrundslyset, hvis vi SELV har tvunget det i nul
+        i nat — altså for at fortryde vores eget indgreb. Ellers ville vi
+        skrive en dagstyrke, som GNOME dæmper væk et øjeblik senere, og så
+        var der to om den igen.
+
+        Om natten: bed GNOME slukke, og KONTROLLÉR det bagefter. Lykkes
+        det, rører vi ikke hardwaren. Lykkes det ikke, skriver vi
+        baggrundslyset i nul som en nødudgang — og siger det i loggen, for
+        så er der noget, der ikke virkede."""
+        self._panel(vaagen)
+        if vaagen:
+            if getattr(self, "_lys_tvunget", False):
+                self._baglys(None)
+                self._lys_tvunget = False
+        else:
+            self.root.after(30_000, self._nat_efterkontrol)
+
+    def _nat_efterkontrol(self) -> None:
+        """Slukkede GNOME faktisk skærmen, da vi bad om det?"""
+        try:
+            if getattr(self, "_vaagen_nu", True):
+                return                    # det blev dag igen imens
+            if self._skaerm_laest() is not True:
+                return                    # slukket, eller kan ikke læses
+            log.warning("Skærmen var stadig tændt 30 sek efter nattens "
+                        "begyndelse — skriver baggrundslyset i nul")
+            self._baglys(0)
+            self._lys_tvunget = True
+        except tk.TclError:
+            return
+
+    def _skaerm_tjek(self) -> None:
+        """Læser skærmens tilstand hvert SKAERM_TJEK_SEK. Skriver intet."""
+        try:
+            skal = getattr(self, "_vaagen_nu", None)
+            if skal is not None:
+                self._skaerm_vagt(skal)
+        except tk.TclError:
+            return
+        self.root.after(SKAERM_TJEK_SEK * 1000, self._skaerm_tjek)
+
+    def _skaerm_vagt(self, skal_vaere_taendt: bool) -> None:
+        """Retter skærmen — men KUN når den er målt forkert TO gange, og
+        højst én gang pr. SKAERM_RETTE_PAUSE.
+
+        Hvorfor de to spærringer, og de er lige så vigtige som rettelsen
+        selv:
+
+        ÉN AFLÆSNING ER IKKE EN FEJL. Skærmen kan være midt i en overgang,
+        og en vagt, der retter på et øjebliksbillede, kommer til at rette
+        noget, der var ved at rette sig selv.
+
+        OG EN RETTELSE, DER GENTAGES, ER IKKE EN RETTELSE. Slukker GNOME
+        skærmen med vilje, og vækker vi den hvert 10. sekund, har vi
+        bygget blinket igen — bare med os som den travle part. Det var
+        præcis den fælde, vi faldt i hele sidste uge, og den ser omhyggelig
+        ud i koden.
+
+        Så: prøv ÉN gang. Kommer fejlen igen inden for et kvarter, så stop
+        med at vække og MELD det i stedet. En maskine, der siger "jeg kan
+        ikke holde skærmen tændt", kan serviceres. En maskine, der bliver
+        ved med at prøve, ser ud til at virke."""
+        er_taendt = self._skaerm_laest()
+        if er_taendt is None or er_taendt == skal_vaere_taendt:
+            self._afvig = 0
+            return
+        self._afvig = getattr(self, "_afvig", 0) + 1
+        if self._afvig < 2:
+            return
+        nu = time.monotonic()
+        sidst = getattr(self, "_sidste_rettelse", None)
+        if sidst is not None and nu - sidst < SKAERM_RETTE_PAUSE:
+            if not getattr(self, "_skaermfejl_meldt", False):
+                self._skaermfejl_meldt = True
+                log.error("Skærmen står forkert IGEN mindre end %d sek efter "
+                          "sidste rettelse — holder op med at vække den",
+                          SKAERM_RETTE_PAUSE)
+                self.bot.send_admin(
+                    "⚠️ Skærmen kan ikke holdes "
+                    + ("tændt" if skal_vaere_taendt else "slukket")
+                    + " på " + self.config.machine_name
+                    + ".\n\nMaskinen har prøvet at rette den og fået samme "
+                    "fejl igen med det samme. Den prøver ikke mere, for så "
+                    "ville skærmen blinke.\n\nBeskeder kommer stadig frem — "
+                    "men skærmen skal ses på.")
+            return
+        self._sidste_rettelse = nu
+        self._afvig = 0
+        log.warning("Skærmen var %s, men skulle være %s — retter én gang",
+                    "tændt" if er_taendt else "slukket",
+                    "tændt" if skal_vaere_taendt else "slukket")
+        self._panel(skal_vaere_taendt)
 
     def _panel(self, taendt: bool) -> None:
         """Tænder eller SLUKKER selve skærmpanelet.
@@ -2347,7 +2889,15 @@ class LivlineUI:
 
         install.sh giver nu gruppen "video" skriveadgang. Fejler det
         alligevel, siges det højt én gang, så det kan ses i loggen og
-        rettes — i stedet for at forsvinde."""
+        rettes — i stedet for at forsvinde.
+
+        KALDES KUN VED SKIFT (fra v4.94). Den skrev før hver runde, og så
+        slog den sig med GNOME's dæmpning: appen satte fuld styrke, GNOME
+        dæmpede et halvt minut senere, og lyset vandrede hele dagen. Nu
+        skriver den to gange i døgnet: 0 ved nattens begyndelse, og
+        config-værdien igen om morgenen. Resten af dagen ejer GNOME
+        lysstyrken, og hvor lyst der så er, bestemmes af
+        'idle-brightness' (install.sh sætter den)."""
         try:
             import glob
             mapper = glob.glob("/sys/class/backlight/*/")
@@ -2372,6 +2922,20 @@ class LivlineUI:
                             "Mangler kiosk-brugeren skriveadgang til "
                             "/sys/class/backlight/*/brightness?", e)
             self._lys_fejl = getattr(self, "_lys_fejl", 0) + 1
+
+    def _enter_uden_fokus(self) -> str:
+        """Enter, når fokus er havnet uden for skrivefeltet.
+
+        Henter fokus hjem og gør derefter det samme, som Enter gør i
+        feltet: sender teksten, hvis der står noget, og kvitterer ellers.
+        Så betyder tasten det samme, uanset hvad en urolig hånd har
+        ramt undervejs."""
+        try:
+            self.entry.focus_set()
+        except tk.TclError:
+            pass
+        self._send_typed()
+        return "break"
 
     def _note_activity(self, _event=None) -> None:
         self._last_key = time.monotonic()
@@ -2846,12 +3410,32 @@ class LivlineUI:
             # behandles HER, hvor vi er i hovedtråden og må røre Tkinter.
             try:
                 while True:
-                    boble, ok = self._svarkoe.get_nowait()
-                    self._tegn_sendefejl(boble, ok)
+                    boble, ok, tid_iso, ventede = self._svarkoe.get_nowait()
+                    self._tegn_sendefejl(boble, ok, tid_iso, ventede)
             except queue.Empty:
                 pass
             self._refresh_topbar()  # whitelist kan ændres af /tilfoej undervejs
             self._vis_netstatus()
+            # KUNNE HISTORIKKEN IKKE SKRIVES, ER BESKEDEN TABT VED NÆSTE
+            # GENSTART. Den står på skærmen nu, og alt ser rigtigt ud —
+            # men kl. 3 i nat er den væk. Derfor skal det siges til den,
+            # der kan gøre noget. Én gang pr. opstart: er disken fuld,
+            # fejler hver eneste besked.
+            if _historik_fejl and not getattr(self, "_histfejl_meldt", False):
+                self._histfejl_meldt = True
+                grund = _historik_fejl[-1]
+                try:
+                    self.bot.send_admin(
+                        f"⚠️ {self.config.machine_name} kan ikke GEMME "
+                        f"beskeder.\nGrund: {grund}\n\n"
+                        f"Beskederne står på skærmen og virker — men de er "
+                        f"væk efter genstarten kl. 3, for de bliver ikke "
+                        f"skrevet ned. Den hyppigste årsag er en fuld disk "
+                        f"eller manglende skriveadgang til "
+                        f"/var/lib/livline/.\n\nMeldes kun én gang pr. "
+                        f"opstart.")
+                except Exception as e:
+                    log.warning("Kunne ikke melde historikfejl: %s", e)
         except Exception as e:
             log.warning("Fejl i beskedløkken: %s", e)
         finally:
@@ -2979,7 +3563,12 @@ class LivlineUI:
             tid = datetime.fromisoformat(r["tid"])
             naar = f"kl. {tid.strftime('%H.%M')} {self._day_label(tid).lower()}"
             if r.get("egen"):
-                self._boble(r.get("tekst", ""), naar, None, egen=True)
+                boble = self._boble(r.get("tekst", ""), naar, None, egen=True)
+                # EN AFSENDELSESFEJL SKAL OGSÅ VÆRE DER EFTER GENSTARTEN.
+                # Uden dette stod et svar, der aldrig nåede frem, som et
+                # helt almindeligt sendt svar næste morgen.
+                if r.get("sendt") is False:
+                    self._tegn_sendefejl(boble, False)
                 return
             self._show(Incoming(
                 sender_name=r["navn"], chat_id=int(r["chat_id"]),
@@ -3036,8 +3625,25 @@ class LivlineUI:
         if m.kind == "text":
             self._insert(m.text + "\n")
         elif m.kind == "photo":
+            # EN BESKADIGET FIL BESTÅR exists().
+            #
+            # En manglende fil var håndteret — cron rydder medier efter 30
+            # dage, mens historikken holder de seneste 100 beskeder, så en
+            # gammel billedbesked kan blive stående uden sin fil. Men en
+            # fil, der ER der og er halv (afbrudt download, fuld disk,
+            # strømsvigt midt i en skrivning), vælter Image.open — og så
+            # dør HELE optegningen af samtalen. Skærmen ville stå med en
+            # halv samtale, eller tom.
+            #
+            # Fundet i en udefrakommende gennemgang 05.10, som et spørgsmål
+            # ved siden af et fund, der ikke holdt. Det er den bedste slags.
             if m.file_path and m.file_path.exists():
-                self._insert_photo(m.file_path)
+                try:
+                    self._insert_photo(m.file_path)
+                except Exception as e:
+                    log.warning("Billedet %s kunne ikke vises (%s)",
+                                m.file_path.name, e)
+                    self._insert("(billede — kunne ikke vises)\n")
             else:
                 self._insert("(billede)\n")
             if m.text:
@@ -3400,6 +4006,22 @@ class LivlineUI:
         # (Mistænkt årsag til "den viser ikke altid, at jeg har sendt noget".)
         if self.config.mode == "enkelte" and self.selected != rec[0]:
             self.selected = rec[0]
+        # HVEM VENTEDE, FØR VI RYDDEDE MÆRKET?
+        #
+        # Svaret er selv kvitteringen, så det røde mærke ryddes her — og
+        # det sker 30 linjer FØR afsendelsen overhovedet forsøges.
+        #
+        # Går nettet i det sekund, han trykker "Tak", står han med en
+        # boble, der siger "Kunne ikke sendes" — og uden det røde mærke,
+        # der ellers ville minde ham om, at der stadig venter noget. For
+        # ham ser det ud, som om sagen er afsluttet. Familien fik aldrig
+        # svaret.
+        #
+        # Derfor huskes de ventende, så mærket kan sættes TILBAGE, hvis
+        # afsendelsen mislykkes. Se _tegn_sendefejl.
+        #
+        # Fundet i en udefrakommende gennemgang af prøvefilen 05.10.
+        ventede = set(self._ukvitteret)
         for cid in rec:
             self._kvitter(cid, svarer=True)
         nu = datetime.now()
@@ -3434,12 +4056,37 @@ class LivlineUI:
         # Derfor lægges resultatet i en kø, som _poll_inbox tømmer i
         # hovedtråden — samme vej som indgående beskeder allerede går.
         self.bot.send_text(rec, reply_text,
-                           svar=lambda ok, b=boble: self._svarkoe.put((b, ok)))
+                           svar=lambda ok, b=boble, t=nu.isoformat(),
+                           v=ventede: self._svarkoe.put((b, ok, t, v)))
 
-    def _tegn_sendefejl(self, boble, ok: bool) -> None:
+    def _tegn_sendefejl(self, boble, ok: bool, tid_iso: str | None = None,
+                        ventede: set | None = None) -> None:
         """Markerer en boble, hvis beskeden ikke kunne sendes. Kaldes KUN
-        fra hovedtråden, via køen i _poll_inbox."""
-        if ok or boble is None:
+        fra hovedtråden, via køen i _poll_inbox.
+
+        Fejlen gemmes OGSÅ i historikken, så den stadig er der efter
+        genstarten kl. 3 — se markér_ikke_sendt.
+
+        Og det røde mærke sættes TILBAGE: svaret var kvitteringen, men
+        kvitteringen nåede ikke frem, så beskeden venter stadig. Uden det
+        ser sagen afsluttet ud for ham, mens familien aldrig fik noget."""
+        if ok:
+            return
+        if ventede:
+            self._ukvitteret |= ventede
+            log.warning("Svaret nåede ikke frem — sætter mærket tilbage "
+                        "for %d besked(er)", len(ventede))
+            try:
+                self._refresh_topbar()
+            except tk.TclError:
+                pass
+        if tid_iso:
+            markér_ikke_sendt(self._history_path, tid_iso)
+            for r in reversed(self._rows):
+                if r.get("tid") == tid_iso and r.get("egen"):
+                    r["sendt"] = False
+                    break
+        if boble is None:
             return
         try:
             boble.configure(highlightbackground=REC, highlightthickness=4)

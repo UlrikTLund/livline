@@ -3085,22 +3085,129 @@ def _():
         "/status siger ikke noget om forbindelsen"
 
 
-@proev("sessionen må aldrig gå i dvale, mens Livline kører")
+@proev("appen skriver ikke skærmens tilstand hver runde — den måler først")
 def _():
-    # RETTELSEN PÅ FIRE DAGES JAGT, og den er værd at have en prøve på.
+    """DEN FEJL, DER KOSTEDE FEM DAGE, OG DEN SKAL IKKE KUNNE KOMME IGEN.
+
+    Vagten satte før skærmen hver runde uden at spørge. Begrundelsen var
+    god: en skærm, der er sort om morgenen, er den farlige fejl, for så
+    ligner maskinen en, der er død, og familien ringer ikke.
+
+    Men det var SELVE KALDET, der slukkede skærmen. Målt 05.10 på to
+    maskiner: ét org.gnome.ScreenSaver.SetActive(false) på en session uden
+    input i timevis tænder panelet i præcis 15 sekunder, hvorefter GNOME
+    lægger sit skjold tilbage. Appen bad om lys hvert 30. sekund og
+    bestilte mørket i samme bevægelse. 15 tændt, 15 slukket, hele dagen.
+
+    Maskine 01 kørte v4.81 uden det kald og har aldrig haft fejlen.
+    Prøven: 4.81 lagt på en maskine, der blinkede — blinket stoppede.
+
+    Samme fejl ramte lysstyrken først (4.80): appen skrev fuld styrke hvert
+    halve minut, GNOME dæmpede imellem, lyset vandrede mellem 100 og 30 %.
+    Ét og samme problem, to steder."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    vagt = kilde.split("def _nat_vagt")[1].split("\n    def ")[0]
+
+    # Kaldene må KUN ske ved skift. Står de ubetinget i løkken, er fejlen
+    # tilbage — og den ser ikke forkert ud i koden, den ser omhyggelig ud.
+    assert 'if vaagen != getattr(self, "_vaagen_nu", None):' in vagt, \
+        "skærmen sættes uden at der er noget at ændre — det var fejlen"
+    assert "self._skaerm_vagt(vaagen)" in vagt, \
+        "der er ingen vagt, der retter en skærm, som står forkert"
+
+    # Og vagten skal MÅLE før den skriver. En vagt, der retter uden at
+    # måle, er den samme fejl med et nyt navn.
+    v = kilde.split("def _skaerm_vagt")[1].split("\n    def ")[0]
+    assert "self._skaerm_laest()" in v, "vagten måler ikke, den skriver bare"
+    assert "er_taendt == skal_vaere_taendt" in v, \
+        "vagten sammenligner ikke med den ønskede tilstand"
+    assert "log.warning" in v, \
+        "retter vagten noget, skal det i loggen — ellers ved vi ikke, at " \
+        "noget slukkede skærmen"
+
+    # bl_power læses, ikke gættes. 0 = tændt, 4 = slukket.
+    laes = kilde.split("def _skaerm_laest")[1].split("\n    def ")[0]
+    assert "bl_power" in laes and '== "0"' in laes, \
+        "der læses ikke bl_power — så kan vagten ikke vide, om skærmen lyser"
+
+    # FØRSTE RUNDE MÅ IKKE SKRIVE. Med None som udgangspunkt ville den
+    # altid gå i skifte-grenen og sende et kald, også når skærmen stod
+    # rigtigt. Starter appen midt på dagen efter en opdatering, er det
+    # netop den unødige skrivning, vi fjernede 2.880 af.
+    assert 'if not hasattr(self, "_vaagen_nu"):' in vagt, \
+        "første runde efter opstart skriver, uden at der er noget at ændre"
+    assert "self._skaerm_laest()" in vagt, \
+        "tilstanden ved opstart gættes i stedet for at måles"
+
+    # TO SPÆRRINGER PÅ RETTELSEN, og de er lige så vigtige som rettelsen.
+    # Én aflæsning kan være midt i en overgang. Og en rettelse, der
+    # gentages hvert 10. sekund, ER blinket — bare med os som den travle
+    # part. Det er præcis den fælde, der kostede fem dage.
+    assert "self._afvig < 2" in v, \
+        "vagten retter på ÉN aflæsning — en overgang bliver taget for en fejl"
+    assert "SKAERM_RETTE_PAUSE" in v, \
+        "der er ingen grænse for, hvor tit skærmen rettes — så er blinket " \
+        "tilbage med os som afsender"
+    assert "send_admin" in v, \
+        "kommer fejlen igen, rettes der bare videre uden at nogen får besked"
+
+
+@proev("run.sh må ALDRIG afbryde — en byggetidskontrol hører ikke i noget, "
+       "der kører hver dag")
+def _():
+    """Jeg skrev selv denne fejl 05.10 og fik den fundet samme dag.
+
+    Kontrollen af dagstyrken stod med 'exit 1' INDE i run.sh. Fejlede
+    tjekket ved en session — fordi GNOME var et øjeblik om at svare, eller
+    nøglen et øjeblik ikke var skrivbar — afsluttede run.sh, og appen
+    startede aldrig. Tomt skrivebord i en stue, og ingen til at starte den
+    igen.
+
+    En skærm med forkert lysstyrke er til at leve med. En skærm uden
+    Livline er ikke. Så run.sh prøver, logger, og KØRER VIDERE."""
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    blok = t.split("/opt/livline/run.sh <<", 1)[1].split("\nEOF\n", 1)[0]
+    kode = "\n".join(l for l in blok.splitlines()
+                     if not l.lstrip().startswith("#"))
+
+    assert "exit 1" not in kode, \
+        "run.sh kan afbryde ved en fejl — så starter appen ikke, og " \
+        "skærmen står tom i en stue"
+
+    # DEN ENE TILLADTE AFSLUTNING ER LÅSEN.
     #
-    # GNOME dæmper skærmen, når ingen rører maskinen, og slukker den til
-    # sidst. For en maskine, der står i en stue og skal kunne læses på
-    # afstand uden at nogen rører den, er det forkert — men GNOME tager
-    # ikke fejl. Vi havde bare ikke sagt, hvad maskinen er.
+    # Kører der allerede en run.sh, SKAL den nye afslutte — ellers starter
+    # to kopier af appen, Telegram tillader kun én forbindelse, de skubber
+    # hinanden af og dør, og rollback-tælleren tolker det som en defekt
+    # version. Den linje bærer vægt.
     #
-    # Første forsøg var at slå GNOME's indstillinger fra. Det gav et blink
-    # hvert 15. sekund: et lag længere nede overtog og slukkede panelet
-    # helt. Målt på maskine 04 den 04.10 — bl_power skiftede mellem 0 og 4,
-    # mens brightness slet ikke rørte sig, og GNOME's pauseskærm aldrig var
-    # aktiv.
-    #
-    # Vi fjernede styringen uden at overtage arbejdet.
+    # (Min første udgave af denne prøve forbød al "exit 0" og ville have
+    # dømt låsen ude. Anden gang i dag, at en prøve målte ordet i stedet
+    # for meningen.)
+    assert kode.count("exit 0") == 1, \
+        "der er mere end én afslutning i run.sh — kun låsen må afslutte"
+    assert "en starter kører allerede" in blok, \
+        "låsens afslutning kan ikke genkendes — så kan prøven ikke skelne " \
+        "den fra en afbrydelse ved fejl"
+
+    # Og dagstyrken skal stadig SÆTTES her, bare uden at kunne vælte noget.
+    assert "idle-brightness" in kode, "dagstyrken sættes ikke ved opstart"
+    assert "ADVARSEL" in blok, \
+        "lykkes dagstyrken ikke, siges det ikke i loggen"
+
+
+@proev("maskinen laver ALDRIG lyd — også når den ikke bliver bedt om det")
+def _():
+    """Lyden blev fjernet i 4.75, men to linjer i run.sh blev glemt: de
+    slog lyden TIL og satte den til 75 % ved hver opstart. De stod der i
+    tolv versioner.
+
+    Hvorfor det er værre end et levn: skærmen bliver sort kl. 22, men
+    lyden gjorde ikke. En systemlyd kl. 02 ville fylde lejligheden — og
+    han kan ikke skrue ned, for volumenknapperne er under papiret."""
     sti = pathlib.Path(lv.__file__).parent / "install.sh"
     if not sti.exists():
         return
@@ -3108,20 +3215,125 @@ def _():
     kode = "\n".join(l for l in t.splitlines()
                      if not l.lstrip().startswith("#"))
 
-    assert "gnome-session-inhibit" in kode, \
-        "sessionen får ikke besked om, at maskinen er i brug — " \
-        "skærmen dæmper og slukker af sig selv"
-    assert "--inhibit idle" in kode, \
-        "der holdes ikke på netop uvirksomheds-markeringen"
-    # Markeringen skal følge APPEN, ikke ligge som en løs proces. Dør
-    # appen, skal den forsvinde af sig selv — ingen tilstand at rydde op i.
-    assert "$INHIBIT \"$LIVLINE_PY\"" in kode, \
-        "markeringen holdes ikke om selve appen"
-    # Mangler værktøjet, skal det siges — ikke forsvinde
-    assert "gnome-session-inhibit mangler" in kode, \
-        "en maskine uden værktøjet tier om, at skærmen kan dæmpe"
+    assert "set-sink-mute @DEFAULT_SINK@ 1" in kode, \
+        "lyden dæmpes ikke ved opstart"
+    assert "set-sink-volume @DEFAULT_SINK@ 0%" in kode, \
+        "lydstyrken sættes ikke i nul"
+    for forbudt in ("set-sink-mute @DEFAULT_SINK@ 0", "75%"):
+        assert forbudt not in kode, \
+            f"{forbudt!r} er tilbage — maskinen kan lave lyd om natten"
 
-    # OG DE TRE INDSTILLINGER SKAL VÆRE VÆK IGEN.
+    # Og skærmlæseren skal ikke kunne startes med en genvejstast. Rammer
+    # nogen den, begynder maskinen at TALE, og han kan ikke stoppe den.
+    assert "screen-reader" in kode, \
+        "skærmlæserens genvejstast er ikke slået fra — kun dens autostart"
+    assert "screen-reader-enabled false" in kode, \
+        "tilgængelighedsindstillingen for skærmlæseren er ikke slået fra"
+
+
+@proev("et planlagt skift tælles ikke som et nedbrud")
+def _():
+    """livline-vis dræber appen med vilje. Skifter man tre gange i træk —
+    som ved en overlevering, hvor alle tre opsætninger prøves foran den
+    ældre — så run.sh tre korte kørsler, kaldte det en crash-loop og
+    rullede koden tilbage til .bak midt i demonstrationen, med en ⚠️ om en
+    mislykket opdatering, der aldrig fandt sted.
+
+    To rigtige mekanismer, der ikke kendte hinanden."""
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+
+    vis = t.split("/usr/local/sbin/livline-vis <<", 1)[1].split("\nEOF\n", 1)[0]
+    assert "/run/livline-planlagt" in vis, \
+        "livline-vis siger ikke til, at drabet er med vilje"
+
+    blok = t.split("/opt/livline/run.sh <<", 1)[1].split("\nEOF\n", 1)[0]
+    assert "/run/livline-planlagt" in blok, \
+        "run.sh ser ikke efter, om et kort liv var planlagt"
+    # Der skal ses på TIDSSTEMPLET, ikke blot om filen findes: /run ejes af
+    # root, og run.sh kører som kiosk-brugeren og kan ikke slette der. En
+    # seddel, der skulle fjernes, ville blive liggende og dække over et
+    # rigtigt nedbrud bagefter.
+    assert 'stat -c %Y /run/livline-planlagt' in blok, \
+        "sedlens tidsstempel læses ikke — en glemt seddel ville dække " \
+        "over et rigtigt nedbrud"
+    assert "rm -f /run/livline-planlagt" not in blok, \
+        "run.sh prøver at slette i /run, og det må kiosk-brugeren ikke"
+
+
+@proev("fortrydelsen kan bestilles igen og igen")
+def _():
+    """systemd-run --on-active laver TO enheder. Vi stoppede kun timeren,
+    og tjenesten blev liggende — så næste netskifte blev afvist med
+    "enheden findes allerede", og livline-wifi nægtede at skifte net.
+    Opdaget i en stue ville det betyde, at man ikke kan flytte maskinen
+    til et andet net, selv om kommandoen findes."""
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    assert "livline-fortryd.timer livline-fortryd.service" in t, \
+        "kun timeren ryddes — tjenesten bliver liggende og spærrer næste skifte"
+    assert "reset-failed" in t, \
+        "en enhed, der er endt i fejl, ryddes ikke — den tilstand overlever længst"
+
+
+@proev("et beskadiget billede må ikke vælte hele samtalen")
+def _():
+    """En manglende fil var håndteret. En fil, der ER der og er halv —
+    afbrudt download, fuld disk, strømsvigt midt i en skrivning — bestod
+    exists() og væltede Image.open. Og så døde HELE optegningen: skærmen
+    med en halv samtale, eller tom.
+
+    Fundet som et spørgsmål ved siden af et fund, der ikke holdt."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    blok = kilde.split('elif m.kind == "photo":')[1][:1400]
+    assert "try:" in blok and "except Exception" in blok, \
+        "et billede, der ikke kan læses, vælter optegningen af samtalen"
+    assert "kunne ikke vises" in blok, \
+        "der sættes ingen pladsholder — beskeden forsvinder i stedet"
+    assert "log.warning" in blok, \
+        "et billede, der ikke kunne vises, siges ikke i loggen"
+
+
+@proev("GNOME ejer dagstyrken — og vi fortæller den hvor lyst")
+def _():
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+
+    # idle-brightness er nu den ENESTE dagstyrke. Uden den dæmper GNOME til
+    # 30 %, og det er i underkanten på tre meters afstand.
+    assert "idle-brightness" in kode, \
+        "GNOME dæmper til sine 30 % — der er ikke sagt, hvor lyst det skal være"
+
+    # OG DEN SKAL KONTROLLERES. "2>/dev/null || true" fortæller ingenting:
+    # forsvinder nøglen ved en Ubuntu-opdatering, bliver dagstyrken forkert
+    # i tavshed, og det opdages først, når en pårørende siger, at skærmen
+    # er mørk. Samme fejltype som baggrundslyset, der ikke virkede i
+    # halvanden måned, fordi fejlen blev slugt.
+    blok = kode.split("idle-brightness", 1)[1][:900]
+    assert "gsettings writable" in kode, \
+        "der kontrolleres ikke, at nøglen overhovedet kan sættes"
+    assert "LYS_NU" in blok or "forventede" in blok, \
+        "idle-brightness læses ikke tilbage efter den er sat"
+    assert "idle-brightness 45 2>/dev/null || true" not in kode, \
+        "dagstyrken sættes med en fejl, der slugges — så ved ingen, om den " \
+        "blev sat"
+
+    # INGEN INHIBIT. Den forhindrer GNOME i at dæmpe, og dæmpningen ER
+    # løsningen. Den var heller ikke årsagen til blinket: målt 05.10
+    # fortsatte blinket uden den.
+    assert "gnome-session-inhibit" not in kode, \
+        "inhibit er tilbage — den forhindrer dæmpningen, som nu er det, " \
+        "der sætter dagstyrken"
+
+    # DE TRE INDSTILLINGER SKAL VÆRE VÆK.
     # De blev sat ud fra en observation, der var rigtig, med en rettelse,
     # der var forkert. Kommer de tilbage, kommer blinket med dem.
     for forbudt in ("idle-dim false",
@@ -3130,11 +3342,11 @@ def _():
         assert forbudt not in kode, \
             f"{forbudt!r} er sat igen — det gav et blink hvert 15. sekund"
 
-    # Lyssensoren SKAL stadig være slået fra: den ændrer lysstyrken
-    # uafhængigt af, om nogen rører maskinen, og slås med appens egen
-    # faste lysstyrke om den samme fil.
+    # Lyssensoren SKAL stadig være slået fra: den ændrer lysstyrken efter
+    # rummets lys, uafhængigt af om nogen rører maskinen, og så er der to
+    # om dagstyrken igen.
     assert "ambient-enabled false" in kode, \
-        "lyssensoren slås ikke fra — den slås med appens faste lysstyrke"
+        "lyssensoren slås ikke fra — så er der to om dagstyrken"
 
 
 @proev("install.sh slår genvejstasterne fra")
@@ -3589,6 +3801,248 @@ def _():
     # ingen kan bruge sudo på maskinen — heller ikke over Tailscale.
     assert "visudo -c -f /etc/sudoers.d/livline-vis" in t, \
         "sudoers-filen kontrolleres ikke, før den tages i brug"
+
+
+@proev("ingen besked må forsvinde i tavshed — fire veje, der før var tavse")
+def _():
+    """Fire fund fra to udefrakommende gennemgange af appen 05.10. De har
+    én ting til fælles: maskinen tabte noget UDEN at sige det, og det er
+    den fejltype, hele projektet er bygget imod."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    besked = kilde.split("async def _on_message")[1].split("\n    async def ")[0]
+
+    # 1) FOTO: downloaden lå uden værn. Røg nettet midt i hentningen,
+    # kastede den en fejl FØR _modtag — og billedet kom hverken i
+    # historikken, på skærmen eller videre til de øvrige.
+    foto = besked.split("elif msg.photo:")[1].split("elif ")[0]
+    assert "try:" in foto and "except Exception" in foto, \
+        "et foto, der ikke kan hentes, forsvinder uden spor"
+    assert "send_admin" in foto, \
+        "en mislykket billedhentning meldes ikke til den, der kan gøre noget"
+    assert "kunne ikke hentes" in foto, \
+        "der kommer ingen linje på skærmen om det manglende billede"
+
+    # 2) UKENDT BESKEDTYPE: her stod "if hvad is None: return". En
+    # afstemning, en live-lokation, noget Telegram tilføjer næste år —
+    # intet på skærmen, intet i historikken, ingen videresendelse.
+    # Fundet af BEGGE gennemgange uafhængigt af hinanden.
+    assert "if hvad is None:\n                return" not in besked, \
+        "en ukendt beskedtype forsvinder stadig uden spor"
+    assert 'hvad = "noget, skærmen ikke kan vise"' in besked, \
+        "en ukendt beskedtype får ikke en linje på skærmen"
+    assert "msg.poll" in besked, "en afstemning har ikke sit eget navn"
+
+    # 3) RETTEDE BESKEDER: de RAMMER funktionen (målt med en rigtig
+    # Update), men kom ind som en helt ny besked. To bobler med to
+    # tidspunkter og intet, der siger, at den sidste er en rettelse.
+    assert "update.edited_message is not None" in besked, \
+        "en rettet besked kendes ikke fra en ny"
+    assert '"Rettet: "' in besked, \
+        "en rettet besked ser ud som en ny besked på skærmen"
+    assert "rettede sin besked til" in besked, \
+        "de øvrige i tråden får ikke at vide, at beskeden er rettet"
+
+    # 4) TEKSTEN, DER LØJ: "sendt videre til de andre" stod fast i både
+    # video- og talebeskedsvaret, men videresendelsen sker kun i
+    # fællestråd. I enkelte fik afsenderen altså at vide, at noget var
+    # sendt videre, som ikke var sendt nogen steder.
+    assert "_videresendt_linje" in besked, \
+        "svaret om video og talebesked lover videresendelse uden at tjekke"
+    v = kilde.split("def _videresendt_linje")[1].split("\n    async def ")[0]
+    assert "faellestraad" in v and "len(self.whitelist) > 1" in v, \
+        "linjen om videresendelse siges uden at se, om der ER andre"
+
+
+@proev("en alarm må ikke kunne gøre sig selv tavs for altid")
+def _():
+    """To steder satte koden mærket "meldt" FØR alarmen var sendt. Fejlede
+    alarmen — fordi din egen telefon var uden net i netop det sekund —
+    blev personen alligevel husket som meldt, og alarmen kom ALDRIG.
+
+    Det er den værste form for den fejl, maskinen er bygget imod: alarmen
+    om en tavs fejl blev selv tavs, permanent."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    for navn, maerke in (("_meld_afsendelsesfejl", "self._send_fejl.add"),
+                         ("_meld_ukendt", "self._notified_unknown.add")):
+        blok = kilde.split(f"def {navn}")[1].split("\n    async def ")[0]
+        assert maerke in blok, f"{navn} sætter slet ikke et mærke"
+        foer_send = blok.split("await")[0]
+        assert maerke not in foer_send, \
+            (f"{navn} markerer som meldt FØR alarmen er sendt — fejler "
+             f"alarmen, kommer den aldrig igen")
+
+
+@proev("en afsendelsesfejl skal stadig kunne ses efter genstarten kl. 3")
+def _():
+    """Den røde markering fandtes kun i det kørende vindue. Maskinen
+    genstarter kl. 3, samtalen tegnes fra historikken — og så stod svaret
+    der som et helt almindeligt sendt svar. Han kunne se ud til at have
+    svaret, mens familien aldrig fik beskeden."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    assert "def markér_ikke_sendt" in kilde, \
+        "en afsendelsesfejl gemmes ikke — den er væk efter genstarten"
+    m = kilde.split("def markér_ikke_sendt")[1].split("\nclass ")[0]
+    assert '"sendt"' in m and "skriv_sikkert" in m, \
+        "fejlen skrives ikke til historikken"
+    assert "_historik_laas" in m, \
+        "historikken rettes uden lås — to tråde skriver i den"
+    # Og den skal TEGNES igen ved opstart og ved skift af samtale.
+    assert kilde.count('r.get("sendt") is False') >= 2, \
+        "den gemte fejl tegnes ikke igen, når samtalen hentes frem"
+
+
+@proev("Enter virker, uanset hvor fokus er havnet")
+def _():
+    """Enter hang kun på skrivefeltet. Ramte en rystende hånd Tab gennem
+    papiret, flyttede fokus sig — og så kunne han hverken skrive eller
+    kvittere. Ingen mus til at klikke sig tilbage. Skærmen var låst, til
+    maskinen genstartede kl. 3."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    assert "_enter_uden_fokus" in kilde, \
+        "Enter virker ikke, når fokus er uden for skrivefeltet"
+    assert 'self.root.bind("<Tab>"' in kilde or '"<Tab>"' in kilde, \
+        "Tab kan stadig flytte fokus ud af feltet"
+    # Vagten skal hente fokus hjem, ikke kun når INTET har fokus.
+    assert "is not self.entry" in kilde, \
+        "fokus hentes kun hjem, når intet har fokus — Tab fanges ikke"
+
+
+@proev("enkelte-tilstanden kan ikke sættes, før dens tastaturdæk findes")
+def _():
+    """Samtaleskift kræver F2-F12, og det kræver et dæk med navnene over
+    de taster. Det dæk findes ikke endnu, så maskinen ville vise navne,
+    der ikke står nogen steder på papiret foran brugeren.
+
+    En indstilling, der kræver en ANDEN FYSISK MASKINE, må ikke kunne
+    sættes med én kommando fra en telefon. Se opgave #77 — tilstanden er
+    ikke kasseret, og koden er bevaret."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    vis = kilde.split("OPSAETNINGER = {")[1].split("}")[0]
+    assert '"enkelte"' not in vis, \
+        "/vis tilbyder stadig enkelte — så kan den sættes fra en telefon"
+    assert "mode_lukket" in kilde, \
+        'en config med "enkelte" falder stille tilbage uden at sige det'
+    # Der må IKKE kastes en fejl: en maskine i drift skal starte, også når
+    # et felt i config er blevet forkert. Ellers står der et tomt
+    # skrivebord i en stue.
+    blok = kilde.split("mode_lukket = mode ==")[1][:400]
+    assert "raise" not in blok, \
+        'en config med "enkelte" må ikke forhindre maskinen i at starte'
+    assert 'mode = "faellestraad"' in blok, \
+        "der falder ikke tilbage til fællestråd"
+
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if sti.exists():
+        t = sti.read_text(encoding="utf-8")
+        assert "Tilstand [faellestraad/enkelte]" not in t, \
+            "install.sh spørger stadig om en tilstand, der er slået fra"
+        v = t.split("/usr/local/sbin/livline-vis <<", 1)[1].split("\nEOF\n", 1)[0]
+        assert "3|enkelte)\n     echo \"FEJL" in v, \
+            "livline-vis sætter stadig enkelte i stedet for at afvise det"
+
+
+@proev("whitelisten kan læses og ændres fra to tråde")
+def _():
+    """/tilfoej og /fjern kommer fra bot-tråden, mens UI-tråden samtidig
+    bygger samtalelisten eller henter modtagere til et svar. Uden lås kan
+    en modtagerliste blive ufuldstændig."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    wl = kilde.split("class Whitelist")[1].split("\n@dataclass")[0]
+    assert "self._laas = threading.Lock()" in wl, "whitelisten har ingen lås"
+    for metode in ("def ids", "def items", "def add", "def remove"):
+        blok = wl.split(metode)[1].split("\n    def ")[0]
+        assert "with self._laas" in blok, f"{metode} tager ikke låsen"
+    # Og skrivningen til disken må IKKE holde låsen: den går til disken og
+    # kan tage tid, og så ville skærmen stå stille imens.
+    gem = wl.split("def _save")[1]
+    assert "with self._laas" not in gem, \
+        "filen skrives, mens låsen holdes — så venter skærmen på disken"
+
+
+@proev("en beskadiget historik spærrer ikke for fremtidige beskeder")
+def _():
+    """Læsning og skrivning blev fanget af ÉN except. Kunne filen ikke
+    læses — en afbrudt skrivning, eller en JSON-ordbog i stedet for en
+    liste — fejlede læsningen, og den nye besked blev IKKE skrevet. Hver
+    gang, hele dagen. Maskinen ser upåklagelig ud, og næste nat kl. 3 er
+    alt, der kom ind efter skaden, væk."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    g = kilde.split("def gem_i_historik")[1].split("\ndef ")[0]
+    assert "isinstance(rows, list)" in g, \
+        "en historik, der ikke er en liste, opdages ikke"
+    assert "beskadiget" in g, \
+        "en ulæselig historik lægges ikke til side — så fejler hver " \
+        "fremtidig skrivning"
+    assert g.count("try:") >= 2, \
+        "læsning og skrivning fanges af samme except — så spærrer en " \
+        "læsefejl for al skrivning"
+    assert "_historik_fejl" in g, \
+        "en fejlet skrivning meldes ikke videre"
+    # HELE funktionen, ikke et vindue på et gæt. Min første udgave kiggede
+    # i de første 3.000 tegn efter "def _poll_inbox" — koden stod 4.092
+    # tegn inde, og prøven dumpede på en rigtig rettelse. En prøve skal
+    # læse den blok, den udtaler sig om; ikke et stykke af den.
+    loekke = kilde.split("def _poll_inbox")[1].split("\n    def ")[0]
+    assert "_historik_fejl" in loekke, \
+        "beskedløkken melder ikke, at beskeder ikke kan gemmes"
+    assert "kan ikke GEMME" in loekke, \
+        "meldingen siger ikke, hvad der er galt"
+
+
+@proev("et skift af brugerflade siger, at papiret skal med")
+def _():
+    """Tastaturdækket til fællestråd dækker alle taster på nær de otte.
+    Skifter man til skrivefelt uden at tage det af, kan han kun skrive
+    q, x, t, n og o — et frit skrivefelt med fem bogstaver er ikke en
+    brugerflade, det er en blindgyde.
+
+    Der spærres ikke for skiftet: dækket kan pilles af med en finger, og
+    en lås ville være en ny måde at sidde fast på. Men kommandoen SKAL
+    sige det, for det er administrator, der skal bede familien om det,
+    og han står ikke i stuen.
+
+    Fundet i en udefrakommende gennemgang af prøvefilen 05.10 — samme
+    fejltype som enkelte-tilstanden: softwaren kan komme i en tilstand,
+    der ikke passer til papiret på maskinen."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    vis = kilde.split("async def _cmd_vis")[1].split("\n    async def ")[0]
+    assert "TASTATURDÆKKET AF" in vis, \
+        "et skift til skrivefelt siger ikke, at dækket skal af — så kan " \
+        "han kun skrive fem bogstaver"
+    assert "TASTATURDÆKKET PÅ" in vis, \
+        "et skift til faste svar siger ikke, at dækket skal på igen"
+    # Og der må IKKE spærres: dækket kan pilles af, så en lås ville være
+    # en ny måde at sidde fast på.
+    assert "return" in vis.split("HUSK PAPIRET")[0], \
+        "der mangler de tidlige afvisninger (ukendt værdi, samme tilstand)"
+
+
+@proev("et svar, der ikke nåede frem, efterlader det røde mærke")
+def _():
+    """Svaret er selv kvitteringen, så det røde mærke ryddes — og det
+    sker, FØR afsendelsen er forsøgt.
+
+    Går nettet i det sekund, han trykker "Tak", står han med en boble,
+    der siger "Kunne ikke sendes", og UDEN det mærke, der ellers ville
+    minde ham om, at der stadig venter noget. For ham ser sagen afsluttet
+    ud. Familien fik aldrig svaret.
+
+    Fundet i en udefrakommende gennemgang af prøvefilen 05.10."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    svar = kilde.split("def _send_reply")[1].split("\n    def ")[0]
+    assert "ventede = set(self._ukvitteret)" in svar, \
+        "de ventende huskes ikke, før mærket ryddes"
+    # Rækkefølgen er det hele: huskes de EFTER kvitteringen, er sættet tomt.
+    assert (svar.index("ventede = set(self._ukvitteret)")
+            < svar.index("self._kvitter(cid, svarer=True)")), \
+        "de ventende huskes EFTER mærket er ryddet — så er sættet tomt"
+    assert "v=ventede" in svar, "de ventende følger ikke med afsendelsen"
+
+    fejl = kilde.split("def _tegn_sendefejl")[1].split("\n    def ")[0]
+    assert "self._ukvitteret |= ventede" in fejl, \
+        "mærket sættes ikke tilbage, når svaret ikke nåede frem"
+    assert "_refresh_topbar" in fejl, \
+        "hovedet opdateres ikke, så mærket ses først et halvt sekund senere"
 
 
 print()
