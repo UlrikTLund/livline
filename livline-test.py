@@ -3146,8 +3146,26 @@ def _():
     # tilbage — og den ser ikke forkert ud i koden, den ser omhyggelig ud.
     assert "if vaagen != self._vaagen_nu:" in vagt, \
         "skærmen sættes uden at der er noget at ændre — det var fejlen"
-    assert "self._skaerm_vagt(vaagen)" in vagt, \
+    assert "self._skift_skaerm(vaagen)" in vagt, \
+        "nattevagten har intet sted, hvor den ændrer skærmen ved et skift"
+
+    # MÅLINGEN LIGGER I SIN EGEN LØKKE, og det er med vilje.
+    #
+    # Nattevagten passer uret hvert 30. sekund; skærmen LÆSES hvert 10.
+    # En læsning af en fil koster ingenting, og det var ikke læsningerne,
+    # der gav blinket — det var skrivningerne. Mål ofte, skriv sjældent.
+    #
+    # (Min første udgave af denne prøve krævede, at nattevagten selv
+    # kaldte _skaerm_vagt. Det gjorde den i en time, indtil en gennemgang
+    # bad om tættere måling. Prøven holdt fast i den version, koden havde
+    # forladt — altså en prøve, der målte fortiden og så rigtig ud.)
+    tjek = kilde.split("def _skaerm_tjek")[1].split("\n    def ")[0]
+    assert "self._skaerm_vagt(skal)" in tjek, \
         "der er ingen vagt, der retter en skærm, som står forkert"
+    assert "SKAERM_TJEK_SEK" in tjek, \
+        "skærmvagten har ikke sit eget interval"
+    assert "self._skaerm_tjek()" in kilde, \
+        "skærmvagtens løkke bliver aldrig startet"
 
     # Og vagten skal MÅLE før den skriver. En vagt, der retter uden at
     # måle, er den samme fejl med et nyt navn.
