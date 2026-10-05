@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.92"
+INSTALL_VER="4.93"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -1236,28 +1236,85 @@ echo "-- livline-vis: skift mellem de tre opsætninger..."
 cat > /usr/local/sbin/livline-vis <<'EOF'
 #!/usr/bin/env bash
 # Skifter mellem de tre opsætninger og genstarter appen.
+#
+# TAGER BÅDE TAL OG NAVNE. Tallene er de oprindelige og bevares, så gamle
+# noter og den trykte vejledning stadig passer. Navnene er til Telegram:
+# appens /vis sender navnet HERIND i stedet for at have sin egen tabel.
+# Oversættelsen findes derfor ét sted. To steder ville før eller siden
+# komme til at betyde noget forskelligt — det er den fejl, der kostede en
+# dag på lysstyrken.
 set -euo pipefail
 case "${1:-}" in
-  1) M=faellestraad; B=knapper  ;;
-  2) M=faellestraad; B=tastatur ;;
-  3) M=enkelte;      B=tastatur ;;
-  *) echo "Brug: livline-vis 1|2|3"
-     echo "  1  faste svar, én fælles samtale"
-     echo "  2  frit skrivefelt, én fælles samtale"
-     echo "  3  frit skrivefelt, én samtale pr. person"
+  1|knapper) M=faellestraad; B=knapper  ;;
+  2|skriv)   M=faellestraad; B=tastatur ;;
+  3|enkelte) M=enkelte;      B=tastatur ;;
+  *) echo "Brug: livline-vis 1|2|3  (eller knapper|skriv|enkelte)"
+     echo "  1  knapper   faste svar, én fælles samtale"
+     echo "  2  skriv     frit skrivefelt, én fælles samtale"
+     echo "  3  enkelte   frit skrivefelt, én samtale pr. person"
+     echo
+     python3 - <<'NUEOF' || true
+import json, pathlib
+try:
+    d = json.loads(pathlib.Path('/etc/livline/config.json').read_text())
+    print("Kører nu: %s / %s" % (d.get("mode", "?"),
+                                 d.get("betjening", "knapper")))
+except Exception as e:
+    print("Kunne ikke læse config: %s" % e)
+NUEOF
      exit 1 ;;
 esac
 python3 - "$M" "$B" <<'PYEOF'
-import json, pathlib, sys
+# SKRIVER IKKE DIREKTE I CONFIG.JSON. Går strømmen midt i en skrivning,
+# ville maskinen stå med en halv JSON-fil og slet ikke kunne starte — og
+# det er ikke noget, en pårørende kan rette. Derfor: skriv ved siden af,
+# læs filen tilbage som JSON, og først derefter flyt den på plads.
+# os.replace er atomisk inden for samme filsystem: enten den gamle eller
+# den nye fil, aldrig noget midt imellem.
+#
+# Rettigheder sættes udtrykkeligt. En ny fil ville ellers arve root:root
+# 600 fra umask, og så kunne appen ikke læse sin egen config bagefter.
+import json, os, pathlib, sys
 p = pathlib.Path('/etc/livline/config.json')
+st = p.stat()
 d = json.loads(p.read_text())
 d["mode"], d["betjening"] = sys.argv[1], sys.argv[2]
-p.write_text(json.dumps(d, ensure_ascii=False, indent=2))
+t = p.with_suffix('.json.ny')
+t.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
+os.chown(t, st.st_uid, st.st_gid)
+os.chmod(t, st.st_mode & 0o7777)
+json.loads(t.read_text())          # vælter her, hvis filen er ufuldstændig
+os.replace(t, p)
 PYEOF
 pkill -f livline_bot.py || true
 echo "Opsætning $1 — $M / $B. Skærmen skifter om et par sekunder."
 EOF
 chmod 755 /usr/local/sbin/livline-vis
+
+# APPEN SKAL KUNNE KØRE livline-vis — OG KUN DEN.
+#
+# /vis i Telegram skal kunne skifte brugerfladen, uden at der køres ud til
+# maskinen. Men config.json er root:KIOSK 640: appen må læse den, ikke
+# skrive i den, og det skal den blive ved med. Tokenet står i filen, og en
+# app, der kan skrive i sin egen config, kan også ændre update_url.
+#
+# Derfor den smalle vej: kiosk-brugeren får lov til at køre netop dette
+# ene script som root. Kan nogen misbruge appen, kan de skifte
+# brugerfladen og genstarte den. De kan ikke læse tokenet bedre end før,
+# ikke pege opdateringer et andet sted hen, og ikke fjerne opdater.pub.
+#
+# visudo -c kontrollerer filen FØR den tages i brug. En ødelagt sudoers-fil
+# gør, at INGEN kan bruge sudo på maskinen — heller ikke du, over Tailscale.
+echo "-- sudo-adgang til livline-vis for $KIOSK_USER..."
+cat > /etc/sudoers.d/livline-vis <<EOF
+$KIOSK_USER ALL=(root) NOPASSWD: /usr/local/sbin/livline-vis
+EOF
+chmod 440 /etc/sudoers.d/livline-vis
+if ! visudo -c -f /etc/sudoers.d/livline-vis >/dev/null 2>&1; then
+    rm -f /etc/sudoers.d/livline-vis
+    echo "FEJL: sudoers-linjen blev ikke gyldig — fjernet igen."
+    echo "      /vis virker ikke, men maskinen er uskadt. Resten fortsætter."
+fi
 
 echo "-- livline-rapport: maskinens tilstand i én linje (til vagtcentralen)..."
 # Ingen bruger den endnu. Den lægges ind NU, fordi den skal ligge på hver

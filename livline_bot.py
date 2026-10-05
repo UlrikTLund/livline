@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.92
+VERSION 4.93
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -151,7 +151,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.92"
+VERSION = "4.93"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -674,6 +674,7 @@ class BotWorker:
         app.add_handler(CommandHandler("opdater", self._cmd_update, admin))
         app.add_handler(CommandHandler("skaerm", self._cmd_screenshot, admin))
         app.add_handler(CommandHandler("indstillinger", self._cmd_settings, admin))
+        app.add_handler(CommandHandler("vis", self._cmd_vis, admin))
         app.add_handler(CommandHandler("hjaelp", self._cmd_help, admin))
         app.add_handler(CallbackQueryHandler(self._on_godkend, pattern=r"^godkend:"))
         app.add_handler(MessageHandler(~filters.COMMAND, self._on_message))
@@ -926,9 +927,86 @@ class BotWorker:
             "/fjern <chat_id> — fjern familiemedlem\n"
             "/liste — vis whitelist (med F-taster)\n"
             "/indstillinger — vis hvad maskinen faktisk bruger\n"
+            "/vis — skift brugerflade (knapper / skriv / enkelte)\n"
             "/skaerm — send et billede af brugerens skærm\n"
             "/opdater — hent og installér ny programversion\n"
             "/hjaelp — denne oversigt")
+
+    # De tre opsætninger, som livline-vis kender dem. Teksten her er KUN
+    # til at vise i Telegram — oversættelsen til mode og betjening ligger i
+    # scriptet, så den findes ét sted. Tilføjes en fjerde opsætning, skal
+    # den tilføjes i scriptet; så dukker den op her af sig selv som ukendt.
+    OPSAETNINGER = {
+        "knapper": "faste svar, én fælles samtale",
+        "skriv": "frit skrivefelt, én fælles samtale",
+        "enkelte": "frit skrivefelt, én samtale pr. person",
+    }
+
+    async def _cmd_vis(self, update: Update, ctx):
+        """Skifter brugerflade uden at nogen skal ud til maskinen.
+
+        Hvorfor det skal kunne gøres på afstand: mennesker ændrer sig i
+        begge retninger. Ulriks mor kunne ingenting efter sin sygdom og
+        skriver i dag på flere medier. En terminal, der er låst til det,
+        personen kunne den dag den blev leveret, er forkert indrettet — og
+        et skift må ikke kræve et USB-tastatur i en fremmed stue.
+
+        Appen retter IKKE selv i config.json. Filen er root-ejet, fordi
+        tokenet står i den, og en app, der kan skrive i sin egen config,
+        kan også pege opdateringer et andet sted hen. I stedet kaldes
+        livline-vis gennem en sudoers-linje, der kun tillader netop det
+        ene script."""
+        reply = update.effective_message.reply_text
+        nu = "skriv" if self.config.text_input else "knapper"
+        if self.config.mode == "enkelte":
+            nu = "enkelte"
+        arg = (ctx.args[0].lower() if ctx.args else "")
+
+        if not arg:
+            linjer = [
+                f"{'▶' if n == nu else ' '} /vis {n} — {t}"
+                for n, t in self.OPSAETNINGER.items()]
+            await reply("🖥 Brugerflade\n\n" + "\n".join(linjer)
+                        + f"\n\n▶ er den, der kører nu.\n\nMaskinen "
+                        "genstarter appen og er klar igen efter få sekunder.")
+            return
+
+        if arg not in self.OPSAETNINGER:
+            await reply(f"Kender ikke '{arg}'. Vælg en af: "
+                        + ", ".join(self.OPSAETNINGER) + "\n\n"
+                        "Skriv /vis uden mere for at se, hvad de betyder.")
+            return
+
+        if arg == nu:
+            await reply(f"Maskinen bruger allerede '{arg}' "
+                        f"({self.OPSAETNINGER[arg]}). Intet ændret.")
+            return
+
+        await reply(f"🖥 Skifter til '{arg}' — {self.OPSAETNINGER[arg]}.\n"
+                    "Skærmen bliver sort et øjeblik, mens appen starter igen.")
+        try:
+            # -n: fejl med det samme i stedet for at vente på et kodeord,
+            # ingen kan skrive. Mangler sudoers-linjen, skal det siges —
+            # ikke hænge i halvandet minut og se ud som om intet skete.
+            p = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: subprocess.run(
+                    ["sudo", "-n", "/usr/local/sbin/livline-vis", arg],
+                    capture_output=True, text=True, timeout=30))
+        except Exception as e:
+            await reply(f"❌ Skiftet kunne ikke sættes i gang: {e}")
+            return
+        if p.returncode != 0:
+            fejl = (p.stderr or p.stdout).strip() or f"kode {p.returncode}"
+            await reply("❌ Skiftet mislykkedes — brugerfladen er uændret:\n"
+                        + fejl + "\n\nMangler maskinen sudoers-linjen til "
+                        "livline-vis, er den bygget med en install.sh fra "
+                        "før v4.93. Så skal skiftet gøres på maskinen:\n"
+                        f"sudo livline-vis {arg}")
+            return
+        log.info("Brugerfladen skiftet til %s via /vis", arg)
+        # Ingen kvittering her: appen bliver dræbt af scriptet om et øjeblik,
+        # og run.sh starter den igen. Startbeskeden ER kvitteringen, og den
+        # fortæller samtidig, at den nye opsætning faktisk kom op.
 
     async def _cmd_settings(self, update: Update, _):
         """Viser hvad maskinen FAKTISK bruger — ikke hvad der står i filen.

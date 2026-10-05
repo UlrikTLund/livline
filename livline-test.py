@@ -3503,6 +3503,94 @@ def _():
         assert m in t
 
 
+@proev("brugerfladen kan skiftes fra Telegram — og appen rører ikke config'en")
+def _():
+    """Mennesker ændrer sig i begge retninger. Ulriks mor kunne ingenting
+    efter sin sygdom og skriver i dag på flere medier. En terminal, der er
+    låst til det, personen kunne ved leveringen, er forkert indrettet — og
+    et skift må ikke kræve et USB-tastatur i en fremmed stue."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+
+    # Kommandoen skal være REGISTRERET, ikke kun skrevet. En funktion, der
+    # findes men ikke er koblet på, ser rigtig ud i filen og svarer ikke i
+    # Telegram — og det opdages først, når man står og har brug for den.
+    assert 'CommandHandler("vis", self._cmd_vis, admin)' in kilde, \
+        "/vis er ikke registreret som admin-kommando"
+    assert "/vis — skift brugerflade" in kilde, \
+        "/vis står ikke i /hjaelp — en kommando, ingen kan finde, findes ikke"
+
+    # APPEN MÅ IKKE SKRIVE I CONFIG.JSON. Filen er root:kiosk 640, fordi
+    # tokenet står i den. Kunne appen skrive i den, kunne den også pege
+    # update_url et andet sted hen. Derfor går skiftet gennem livline-vis.
+    vis = kilde.split("async def _cmd_vis")[1].split("async def ")[0]
+    for skriv in ("write_text(", "json.dump", "open(", "CONFIG_PATH"):
+        assert skriv not in vis, \
+            f"/vis skriver selv ({skriv}) i stedet for at kalde livline-vis"
+    assert '"sudo", "-n", "/usr/local/sbin/livline-vis"' in vis, \
+        "/vis kalder ikke livline-vis gennem sudo -n"
+
+    # -n, ikke bare sudo: mangler sudoers-linjen, skal det siges med det
+    # samme. Uden -n venter sudo på et kodeord, ingen kan skrive, og
+    # kommandoen hænger til timeout og ser ud som om intet skete.
+    assert "-n" in vis, "sudo kaldes uden -n og kan hænge på et kodeord"
+
+    # En ukendt værdi skal forklares, ikke vælte. Det er en kommando, man
+    # skriver på en telefon, og en stavefejl skal ikke efterlade
+    # administrator i tvivl om, hvad maskinen nu gør.
+    assert "Kender ikke" in vis, "en ukendt opsætning afvises ikke pænt"
+    assert "Intet ændret" in vis, \
+        "et skift til den opsætning, der allerede kører, genstarter appen"
+
+    # Oversættelsen navn -> mode/betjening skal ligge ÉT sted: i scriptet.
+    # To tabeller ville før eller siden komme til at betyde noget
+    # forskelligt — samme fejltype som to systemer om lysstyrken.
+    #
+    # Der ledes efter ordene I CITATIONSTEGN, altså som værdier i koden.
+    # Ordet alene ville også rammes af en forklaring i prosa ("et skift må
+    # ikke kræve et USB-tastatur"), og en prøve, der dumper på en
+    # kommentar, lærer man at se bort fra.
+    for v in ('"faellestraad"', '"tastatur"', "'faellestraad'", "'tastatur'"):
+        assert v not in vis, \
+            "/vis har sin egen tabel over opsætningerne — den skal kun i scriptet"
+
+
+@proev("livline-vis kender navnene, og den kan ikke efterlade en halv config")
+def _():
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    blok = t.split("/usr/local/sbin/livline-vis <<", 1)[1].split("\nEOF\n", 1)[0]
+
+    # Både tal og navne. Tallene bevares, fordi den trykte vejledning og
+    # gamle noter bruger dem; navnene er dem, Telegram sender.
+    for v in ("1|knapper", "2|skriv", "3|enkelte"):
+        assert v in blok, f"livline-vis kender ikke '{v}'"
+
+    # SKRIVER IKKE DIREKTE. Går strømmen midt i en skrivning, ville
+    # maskinen stå med en ufuldstændig JSON-fil og slet ikke kunne starte
+    # — og det kan en pårørende ikke rette.
+    assert "os.replace" in blok, \
+        "config'en skrives direkte i stedet for at blive flyttet på plads"
+    assert "os.chown" in blok and "os.chmod" in blok, \
+        "rettigheder sættes ikke — appen kan ikke læse sin egen config bagefter"
+    assert blok.count("json.loads") >= 2, \
+        "den nye fil læses ikke tilbage som JSON, før den flyttes på plads"
+
+    # Og sudoers-linjen skal findes OG være smal. Peger den på mere end
+    # dette ene script, er hele begrundelsen for at bruge sudo væk.
+    assert "/etc/sudoers.d/livline-vis" in t, "sudoers-linjen lægges ikke ind"
+    sud = t.split("/etc/sudoers.d/livline-vis <<", 1)[1].split("\nEOF\n", 1)[0]
+    assert "NOPASSWD: /usr/local/sbin/livline-vis" in sud, \
+        "sudoers-linjen giver bredere adgang end det ene script"
+    assert "ALL=(root) ALL" not in sud, "sudoers-linjen giver fuld root"
+
+    # visudo -c FØR filen tages i brug. En ødelagt sudoers-fil gør, at
+    # ingen kan bruge sudo på maskinen — heller ikke over Tailscale.
+    assert "visudo -c -f /etc/sudoers.d/livline-vis" in t, \
+        "sudoers-filen kontrolleres ikke, før den tages i brug"
+
+
 print()
 if FEJL:
     print(f"{len(FEJL)} prøve(r) fejlede: {', '.join(FEJL)}")
