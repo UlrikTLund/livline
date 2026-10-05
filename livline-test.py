@@ -3267,20 +3267,38 @@ def _():
     kode = "\n".join(l for l in t.splitlines()
                      if not l.lstrip().startswith("#"))
 
-    assert "set-sink-mute @DEFAULT_SINK@ 1" in kode, \
-        "lyden dæmpes ikke ved opstart"
-    assert "set-sink-volume @DEFAULT_SINK@ 0%" in kode, \
-        "lydstyrken sættes ikke i nul"
+    # DET ER GNOMES EGNE NØGLER, DER AFGØR DET — ikke pactl.
+    #
+    # Prøven krævede før pactl-linjer, og den bestod hver gang. Men MÅLT
+    # på maskine 02 den 05.10: pactl er slet ikke installeret, pipewire
+    # KØRER, event-sounds stod på true, og lydfilerne lå der. Prøven
+    # beviste altså ingenting, mens hele begrundelsen for at fjerne
+    # talebeskeder og video hvilede på, at maskinen var tavs.
+    #
+    # Det er præcis den falske tryghed, en prøve skal ikke give: 140
+    # grønne prøver, hvor den vigtigste ikke kan dumpe.
+    assert "org.gnome.desktop.sound event-sounds false" in kode, \
+        "GNOMEs systemlyde er ikke slået fra — maskinen kan bippe kl. 02"
+    assert "input-feedback-sounds false" in kode, \
+        "tastaturets klik-lyde er ikke slået fra"
     for forbudt in ("set-sink-mute @DEFAULT_SINK@ 0", "75%"):
         assert forbudt not in kode, \
             f"{forbudt!r} er tilbage — maskinen kan lave lyd om natten"
 
     # Og skærmlæseren skal ikke kunne startes med en genvejstast. Rammer
     # nogen den, begynder maskinen at TALE, og han kan ikke stoppe den.
-    assert "screen-reader" in kode, \
+    #
+    # NØGLEN HEDDER "screenreader" I ÉT ORD. Jeg skrev først
+    # "screen-reader", og den nøgle findes ikke — gsettings svarede
+    # "Ingen sådan nøgle", fejlen blev slugt, og genvejen stod stadig på
+    # ['<Alt><Super>s'] bagefter. Prøven kontrollerer navnet, fordi de to
+    # nøgler ikke staves ens og der ingen logik er i det.
+    assert 'screenreader "@as []"' in kode, \
         "skærmlæserens genvejstast er ikke slået fra — kun dens autostart"
     assert "screen-reader-enabled false" in kode, \
         "tilgængelighedsindstillingen for skærmlæseren er ikke slået fra"
+    assert "screen-reader \"@as []\"" not in kode, \
+        "det gamle, forkerte nøglenavn er tilbage — det gør ingenting"
 
 
 @proev("et planlagt skift tælles ikke som et nedbrud")

@@ -467,23 +467,43 @@ gsettings set org.gnome.desktop.wm.keybindings panel-run-dialog "[]" 2>/dev/null
 gsettings set org.gnome.settings-daemon.plugins.media-keys terminal "[]" 2>/dev/null || true
 # Hot corner fra: markør i øverste hjørne må ikke åbne aktivitetsoversigten
 gsettings set org.gnome.desktop.interface enable-hot-corners false 2>/dev/null || true
-# MASKINEN SKAL VÆRE TAVS — OG DET SKAL SÆTTES, IKKE FORUDSÆTTES.
+# MASKINEN SKAL VÆRE TAVS — OG DET VAR DEN IKKE.
 #
-# Her stod det modsatte indtil 05.10: lyden blev slået TIL og sat til
-# 75 % ved hver opstart. Det var rigtigt, dengang talebeskeder blev
-# afspillet. Lyden blev fjernet i 4.75 — men disse to linjer blev glemt,
-# og de stod der stadig i tolv versioner. Fundet i en udefrakommende
-# gennemgang af install.sh.
+# Det her er dagens mest ubehagelige fund, og det er vores eget.
 #
-# Hvorfor det er værre end et levn: skærmen bliver sort kl. 22, men
-# lyden gjorde ikke. En systemlyd kl. 02 ville fylde lejligheden ved
-# 75 %, og han kan ikke skrue ned — volumenknapperne er under papiret.
-# Det er præcis den fejl, lyden blev fjernet for at undgå.
+# Vi fjernede talebeskeder og video i 4.75 med begrundelsen "maskinen
+# laver aldrig lyd". Det stod i ændringsloggen, i prøverne og i
+# gennemgangsprompten som en kendsgerning. MÅLT PÅ MASKINE 02 den 05.10
+# var det aldrig sandt:
 #
-# Nu: dæmpet og nul. Og det SÆTTES hver opstart, i stedet for at vi håber
-# på, at ingen har rørt det.
+#   pipewire og pipewire-pulse KØRTE
+#   /usr/share/sounds/freedesktop/stereo/ lå der
+#   event-sounds stod på TRUE
+#   input-feedback-sounds stod på TRUE
+#
+# Og de to pactl-linjer, der skulle have ordnet det — både den gamle
+# "sæt til 75 %" og min nye "sæt i nul" — gjorde INGENTING, for pactl er
+# slet ikke installeret på maskinen. Fejlen blev slugt af "|| true".
+#
+# En systemlyd kl. 02 i Erlands lejlighed var altså mulig hele tiden. Han
+# kan ikke skrue ned — volumenknapperne er under papiret — og skærmen
+# bliver sort kl. 22, men lyden gjorde ikke.
+#
+# LÆRESTYKKET: en begrundelse, der bygger på "maskinen gør ikke X", skal
+# måles på en maskine, før den skrives ned. Ellers bliver den en
+# forudsætning, som alle senere beslutninger hviler på — og ingen
+# efterprøver en forudsætning.
+#
+# Disse to nøgler er GNOMEs egne og kræver ingen pakke. De er målt til at
+# findes på Ubuntu 26.04.
+gsettings set org.gnome.desktop.sound event-sounds false 2>/dev/null || true
+gsettings set org.gnome.desktop.sound input-feedback-sounds false \
+    2>/dev/null || true
+# Og et bælte oveni, hvis værktøjerne findes på en fremtidig maskine.
+# De gør det ikke på vores — derfor er de IKKE det, vi regner med.
 pactl set-sink-mute @DEFAULT_SINK@ 1 2>/dev/null || true
 pactl set-sink-volume @DEFAULT_SINK@ 0% 2>/dev/null || true
+wpctl set-mute @DEFAULT_AUDIO_SINK@ 1 2>/dev/null || true
 # SKÆRMLÆSEREN SKAL IKKE KUNNE STARTES MED EN GENVEJSTAST.
 #
 # Vi har slået orca-autostart fra, og kommentaren der advarer mod præcis
@@ -497,8 +517,22 @@ pactl set-sink-volume @DEFAULT_SINK@ 0% 2>/dev/null || true
 # tasterne, og ingen af hans otte gør det.
 #
 # Derfor lukkes BÅDE genvejen og tilgængelighedsindstillingen.
+# NØGLEN HEDDER "screenreader" I ÉT ORD — uden bindestreg.
+#
+# Jeg skrev først "screen-reader", og den nøgle findes ikke. gsettings
+# svarede "Ingen sådan nøgle", fejlen blev slugt af "|| true", og
+# genvejen var stadig levende: målt på maskine 02 stod den på
+# ['<Alt><Super>s'] efter at "rettelsen" var kørt.
+#
+# Det er præcis den fejltype, vi har jaget hele ugen — en rettelse, der
+# ser rigtig ud og ikke gør noget. Og den blev kun fundet, fordi vi
+# MÅLTE bagefter i stedet for at tro på, at kommandoen havde virket.
+#
+# Bemærk forskellen: a11y-nøglen HAR bindestreg. De to hedder ikke det
+# samme, og der er ingen logik i det — derfor står begge her, og derfor
+# kontrollerer prøven navnene.
 gsettings set org.gnome.settings-daemon.plugins.media-keys \
-    screen-reader "@as []" 2>/dev/null || true
+    screenreader "@as []" 2>/dev/null || true
 gsettings set org.gnome.desktop.a11y.applications \
     screen-reader-enabled false 2>/dev/null || true
 # Kør terminalen — genstart automatisk hvis den lukker/fejler.
