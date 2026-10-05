@@ -2228,9 +2228,15 @@ for _m, _b in KOMBINATIONER:
                 assert ui.config.replies, "ingen faste svar i knap-tilstand"
                 assert len(ui.config.keys) == len(ui.config.replies), \
                     "der er ikke én tast pr. svar"
-            # sidelisten hører til enkelte-tilstand og kun dér
-            assert (ui.sidebar is None) == (m == "faellestraad"), \
-                f"sideliste forkert i {m}"
+            # Sidelisten hører til enkelte-tilstand og kun dér.
+            #
+            # Der måles mod den tilstand, maskinen FAKTISK kører i, ikke
+            # mod den, config bad om. Fra v4.95 falder "enkelte" tilbage
+            # til faellestraad, fordi den kræver et tastaturdæk, der ikke
+            # findes endnu — og en prøve, der holder fast i det, der blev
+            # bedt om, måler noget andet end virkeligheden.
+            assert (ui.sidebar is None) == (ui.config.mode == "faellestraad"), \
+                f"sideliste forkert i {ui.config.mode}"
         finally:
             luk(ui)
 
@@ -2416,11 +2422,25 @@ def _():
         luk(ui)
 
 
-@proev("skærmen sættes hver runde — der måles ikke på den")
+@proev("skærmen sættes KUN ved skift — tre runder uden ændring rører intet")
 def _():
-    # Samme regel som vinduesvagten. Den farlige fejl er en skærm, der
-    # bliver sort om morgenen: så ligner maskinen en, der er død, og
-    # familien ringer ikke — de tror bare, den er gået i stykker.
+    """DENNE PRØVE SAGDE DET MODSATTE INDTIL 05.10, og den havde ret i sin
+    begrundelse: den farlige fejl er en skærm, der er sort om morgenen, for
+    så ligner maskinen en, der er død, og familien ringer ikke.
+
+    Derfor stod der: "skærmen sættes hver runde — der måles ikke på den",
+    og prøven krævede tre kald på tre runder.
+
+    MEN DET VAR KALDET, DER SLUKKEDE SKÆRMEN. Målt på to maskiner: ét
+    org.gnome.ScreenSaver.SetActive(false) på en session uden input i
+    timevis tænder panelet i 15 sekunder, hvorefter GNOME lægger sit skjold
+    tilbage. Vi bad om lys og bestilte mørket i samme bevægelse, hvert 30.
+    sekund, hele dagen.
+
+    Prøven er vendt om, og det er værd at bemærke, at den FEJLEDE, da
+    koden blev rettet. Den gjorde præcis sit arbejde: den holdt fast i en
+    beslutning, indtil nogen bevidst omgjorde den. En prøve, der bare var
+    forsvundet sammen med koden, havde ikke tvunget den samtale frem."""
     ui = byg()
     kaldt = []
     ui.bot = types.SimpleNamespace(send_admin=lambda t: None,
@@ -2428,13 +2448,22 @@ def _():
     try:
         ui._panel = lambda t: kaldt.append(t)
         ui._baglys = lambda v: None
+        ui._skaerm_laest = lambda: True       # skærmen ER tændt
         ui._er_nat = lambda naar=None: False
         ui.root.after = lambda *a, **k: None
-        ui._nat_nu = False          # ingen ændring — den må IKKE springe over
+        ui._nat_nu = False
+        ui._vaagen_nu = True                  # ingen ændring at lave
         for _ in range(3):
             ui._nat_vagt()
-        assert kaldt == [True, True, True], \
-            f"skærmen skal sættes hver runde, blev kaldt: {kaldt}"
+        assert kaldt == [], \
+            f"skærmen blev sat, uden at der var noget at ændre: {kaldt}"
+
+        # Og ved et SKIFT skal den sættes — én gang.
+        ui._er_nat = lambda naar=None: True
+        ui._last_key = time.monotonic() - lv.NAT_VAEK_SEK - 1
+        ui._nat_vagt()
+        assert kaldt == [False], \
+            f"skærmen blev ikke slukket ved skiftet til nat: {kaldt}"
     finally:
         luk(ui)
 
@@ -2448,9 +2477,14 @@ def _():
     try:
         ui._panel = lambda t: kaldt.append(t)
         ui._baglys = lambda v: None
+        ui._skaerm_laest = lambda: False      # natten er begyndt: slukket
         ui._er_nat = lambda naar=None: True
         ui.root.after = lambda *a, **k: None
         ui._nat_nu = True
+        # Udgangspunktet skal sættes. Fra v4.95 skriver vagten kun ved et
+        # SKIFT, så uden en kendt starttilstand ville første runde blot
+        # læse skærmen og konstatere, at den står rigtigt.
+        ui._vaagen_nu = False
         ui._last_key = time.monotonic()          # nogen rørte lige en tast
         ui._nat_vagt()
         assert kaldt[-1] is True, "skærmen skal være tændt lige efter et tastetryk"
@@ -3110,7 +3144,7 @@ def _():
 
     # Kaldene må KUN ske ved skift. Står de ubetinget i løkken, er fejlen
     # tilbage — og den ser ikke forkert ud i koden, den ser omhyggelig ud.
-    assert 'if vaagen != getattr(self, "_vaagen_nu", None):' in vagt, \
+    assert "if vaagen != self._vaagen_nu:" in vagt, \
         "skærmen sættes uden at der er noget at ændre — det var fejlen"
     assert "self._skaerm_vagt(vaagen)" in vagt, \
         "der er ingen vagt, der retter en skærm, som står forkert"
@@ -3317,14 +3351,25 @@ def _():
     # i tavshed, og det opdages først, når en pårørende siger, at skærmen
     # er mørk. Samme fejltype som baggrundslyset, der ikke virkede i
     # halvanden måned, fordi fejlen blev slugt.
-    blok = kode.split("idle-brightness", 1)[1][:900]
-    assert "gsettings writable" in kode, \
-        "der kontrolleres ikke, at nøglen overhovedet kan sættes"
-    assert "LYS_NU" in blok or "forventede" in blok, \
-        "idle-brightness læses ikke tilbage efter den er sat"
-    assert "idle-brightness 45 2>/dev/null || true" not in kode, \
-        "dagstyrken sættes med en fejl, der slugges — så ved ingen, om den " \
-        "blev sat"
+    # OG DEN SKAL KONTROLLERES — MEN PÅ BYGGETID, IKKE I run.sh.
+    #
+    # Jeg skrev først kontrollen med "exit 1" ind i run.sh, som kører ved
+    # hver session. Fejlede tjekket, afsluttede run.sh, og appen startede
+    # aldrig: tomt skrivebord i en stue. Nu ligger den hårde kontrol i
+    # installationens egen del, hvor man står ved maskinen.
+    #
+    # Og der kontrolleres kun, at NØGLEN FINDES. Værdien kan ikke måles
+    # der: install.sh kører som root, og root har sine egne indstillinger.
+    # Værdien kontrolleres under indkøringen, på en kørende maskine.
+    assert "gsettings range" in kode, \
+        "der kontrolleres ikke, om nøglen til dagstyrken overhovedet " \
+        "findes i GNOMEs skemaer — forsvinder den ved en opdatering, " \
+        "bliver skærmen mørk i tavshed"
+    # Kontrollen må IKKE stå i run.sh: den afbryder, og så starter appen ikke.
+    run = t.split("/opt/livline/run.sh <<", 1)[1].split("\nEOF\n", 1)[0]
+    assert "gsettings range" not in run, \
+        "byggetidskontrollen er havnet i run.sh — den afbryder, og så " \
+        "står skærmen tom i en stue"
 
     # INGEN INHIBIT. Den forhindrer GNOME i at dæmpe, og dæmpningen ER
     # løsningen. Den var heller ikke årsagen til blinket: målt 05.10
@@ -3939,6 +3984,48 @@ def _():
         v = t.split("/usr/local/sbin/livline-vis <<", 1)[1].split("\nEOF\n", 1)[0]
         assert "3|enkelte)\n     echo \"FEJL" in v, \
             "livline-vis sætter stadig enkelte i stedet for at afvise det"
+
+
+@proev("enkelte-tilstandens brugerflade kan stadig bygges")
+def _():
+    """DØD KODE, DER SER LEVENDE UD, ER SIN EGEN RISIKO.
+
+    enkelte er lukket af (#77), men koden er bevaret — den ligner den
+    gamle løsning, der fungerer godt, og den kan komme tilbage med sit
+    eget tastaturdæk. Uden en prøve ville den rådne stille: om et halvt år
+    ville den ikke kunne bygges, og det ville først vise sig den dag,
+    nogen prøvede at vække den.
+
+    Her bygges brugerfladen med dataclasses.replace, altså UDEN om
+    Config.load. Det er med vilje og er den ene undtagelse fra reglen i
+    opsaetning(): netop fordi tilstanden ikke kan nås gennem config
+    længere, er det den eneste måde at holde koden i live."""
+    WHITELIST.write_text(json.dumps({"11": "Mor", "22": "Jens"}))
+    ui = None
+    try:
+        ui = byg(mode="enkelte", text_input=True, blink=False)
+        ui.whitelist = lv.Whitelist(WHITELIST)
+        ui.bot.whitelist = ui.whitelist
+        ui.root.update()
+        assert ui.sidebar is not None, \
+            "samtalelisten bygges ikke længere i enkelte"
+        # F-tasterne skal stadig vælge en samtale. Det er HELE grunden til,
+        # at tilstanden kræver sit eget dæk.
+        ui._select_fkey(0)
+        assert ui.selected == 11, \
+            f"F2 valgte ikke den første på listen: {ui.selected}"
+        ui._select_fkey(1)
+        assert ui.selected == 22, \
+            f"F4 valgte ikke den anden på listen: {ui.selected}"
+        # Og en besked fra den, der IKKE er valgt, må ikke flytte skærmen.
+        besked(ui, 11, "Mor", "hej fra mor")
+        assert ui.selected == 22, \
+            "skærmen skiftede samtale af sig selv — det må den aldrig"
+        assert 11 in ui._venter, "den ventende samtale er ikke markeret"
+    finally:
+        WHITELIST.write_text("{}")
+        if ui is not None:
+            luk(ui)
 
 
 @proev("whitelisten kan læses og ændres fra to tråde")
