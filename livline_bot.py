@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.95
+VERSION 4.96
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -151,7 +151,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.95"
+VERSION = "4.96"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -163,6 +163,16 @@ KENDTE_FELTER = {
 }
 NET_TJEK_SEK = 30         # hvor ofte netvagten prøver at nå Telegram
 NET_STILLE_SEK = 180      # hvor længe uden kontakt, før skærmen siger til.
+# HVOR LANGT ET UDFALD SKAL VÆRE, FØR ADMINISTRATOR FÅR BESKED.
+# En maskine kan ikke fortælle, at den ER uden net — beskeden skulle gå
+# over netop den forbindelse, der mangler. Men den kan sige det BAGEFTER,
+# og den ved præcis hvor længe (målt på 02 og 03: "20 min 0 sek").
+#
+# Grænsen er ikke pynt. Et WiFi, der hikker et minut, sker i ethvert hjem,
+# og en besked om det flere gange om ugen ville få administrator til at
+# holde op med at læse dem. Fem minutter er længe nok til at betyde noget
+# og kort nok til at fange et reelt problem.
+NET_MELD_GRAENSE_SEK = 300
                           # Tre minutter, fordi et kort udfald ikke skal
                           # sætte en advarsel op: en linje, der kommer og
                           # går hele dagen, holder man op med at læse.
@@ -207,6 +217,21 @@ FELT_MIN = 1              # skrivefeltets højde i linjer, når det er tomt.
                           # præcis når der er brug for den
 FELT_MAX = 6              # ... og det højeste, det må vokse til
 VINDUE_VAGT_TIDLIGE = 12  # antal 5-sekunders tjek af vinduet efter opstart
+# DAGSLYSSTYRKEN I PROCENT AF PANELETS MAKSIMUM.
+#
+# 30 er ikke et skøn. Det er den styrke, fire maskiner faktisk har kørt
+# på: 2093 af 6818 = 30,7 %, uændret gennem 13.370 målinger over tre
+# døgn. Ulrik har set dem hver dag i en uge, og hans mor har brugt den
+# ældre model i måneder. "Skærmen har den ikke bedre af lavere
+# lysstyrke, de virker skarpe nok" (11.10).
+#
+# Tallet blev aldrig valgt af nogen — det var hvad Ubuntu-installationen
+# efterlod panelet på. Nu er det en beslutning, så hver maskine får det
+# samme i stedet for hvad der tilfældigvis lå i den brugte computer.
+#
+# Procent og ikke et råt tal: 6818 er maksimum på netop det panel. En
+# anden skærm har et andet maksimum, og 30 % er stadig 30 %.
+LYSSTYRKE_STANDARD = 30
 NAT_START = 22            # skærmen slukker kl. 22 …
 NAT_SLUT = 8              # … og tænder igen kl. 8. Kan sættes pr. maskine
                           # med "nat": [22, 8] — ÉT felt, ikke to, fordi de
@@ -333,7 +358,7 @@ class Config:
     blink: bool = True           # "blink": dæmpet puls ved ny besked
     text_input: bool = False     # udledes af "betjening" (se load)
     nat: tuple = (NAT_START, NAT_SLUT)  # "nat": [sluk-time, tænd-time]
-    lysstyrke: int = 100         # "lysstyrke": baglyset om dagen i procent
+    lysstyrke: int = LYSSTYRKE_STANDARD   # "lysstyrke": baglyset om dagen i %
                                  # af panelets maksimum.
                                  #
                                  # FULD STYRKE ER IKKE MEST LÆSBART. Målt
@@ -456,16 +481,17 @@ def _lysstyrke(raw) -> int:
     tages imod, og en fejl siges HØJT i stedet for at falde stille tilbage.
     """
     if raw is None:
-        return 100
+        return LYSSTYRKE_STANDARD
     try:
         v = int(raw)
     except (TypeError, ValueError) as e:
-        log.warning('Ugyldig "lysstyrke": %r (%s) — bruger 100 %%', raw, e)
-        return 100
+        log.warning('Ugyldig "lysstyrke": %r (%s) — bruger %d %%',
+                    raw, e, LYSSTYRKE_STANDARD)
+        return LYSSTYRKE_STANDARD
     if not 1 <= v <= 100:
         log.warning('Ugyldig "lysstyrke": %r (skal være mellem 1 og 100) '
-                    "— bruger 100 %%", raw)
-        return 100
+                    "— bruger %d %%", raw, LYSSTYRKE_STANDARD)
+        return LYSSTYRKE_STANDARD
     return v
 
 
@@ -713,6 +739,12 @@ class BotWorker:
         # nået at prøve første gang.
         self.sidste_net_ok: float = time.monotonic()
         self.net_vaek_siden: float | None = None   # sat, når udfaldet begyndte
+        # Sat af netvagten, når forbindelsen KOMMER TILBAGE efter et udfald
+        # over grænsen. Læses og nulstilles af _poll_inbox, som sender
+        # beskeden. Netvagten er en almindelig tråd og må ikke selv kalde
+        # Telegram — det skal ske på bot-lagets egen løkke. Samme mønster
+        # som _historik_fejl.
+        self.net_afbrud_sek: float | None = None
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="bot", daemon=True).start()
@@ -744,6 +776,11 @@ class BotWorker:
                     vaek = time.monotonic() - self.net_vaek_siden
                     log.info("Forbindelsen er tilbage efter %d min %d sek",
                              int(vaek // 60), int(vaek % 60))
+                    # Var udfaldet langt nok, skal administrator vide det.
+                    # Vi sender ikke herfra — det gør _poll_inbox, som
+                    # kører på bot-lagets egen løkke.
+                    if vaek >= NET_MELD_GRAENSE_SEK:
+                        self.net_afbrud_sek = vaek
                     self.net_vaek_siden = None
                 self.sidste_net_ok = time.monotonic()
             except OSError as e:
@@ -1238,7 +1275,7 @@ class BotWorker:
             f"{f' ({SKRIFT_PX} px)' if SKRIFT_PX else ''}"
             f"{'  (fed)' if c.bold else ''}\n"
             f"Lysstyrke: {c.lysstyrke} %"
-            f"{' (fuld — prøv 50-70 %, hvis teksten er svær at læse)' if c.lysstyrke == 100 else ''}\n"
+            f"{' (fuld — prøv 30-50 %, hvis teksten er svær at læse)' if c.lysstyrke == 100 else ''}\n"
             f"Administratorer: {len(c.admin_ids)}\n"
             f"Signeret /opdater: "
             f"{'til' if NOEGLE_STI.exists() else 'fra (ingen nøgle)'}")
@@ -1329,11 +1366,30 @@ class BotWorker:
             code = r.text
             # Signaturen ligger ved siden af koden, med .sig sat på adressen.
             # Hentes kun, når maskinen faktisk har en nøgle at prøve den mod.
+            #
+            # CACHE-OMGÅELSEN SKAL MED PÅ .sig-ADRESSEN OGSÅ (4.96).
+            # Adressen bruges med ?frisk=<tid> for at komme uden om
+            # GitHubs mellemlager, som gemmer rå filer i op til fem
+            # minutter. Før klippede vi hele forespørgselsdelen af, før
+            # ".sig" blev sat på — rigtigt tænkt, for ellers blev
+            # adressen "livline_bot.py?frisk=123.sig". Men så blev KODEN
+            # hentet frisk og UNDERSKRIFTEN gennem mellemlageret.
+            #
+            # Følgen: lægger man begge filer op og kører /opdater med det
+            # samme, kan maskinen få den nye kode og en GAMMEL signatur.
+            # Den afviser korrekt — men fejlteksten siger "signaturen
+            # passer ikke til koden", og så leder man efter en forkert
+            # nøgle i stedet for et mellemlager. Fail-closed, men med en
+            # vildledende forklaring, og altid den aften man har travlt.
             signatur = None
             if NOEGLE_STI.exists():
+                grund, _, forespoergsel = self.config.update_url.partition("?")
+                sig_url = grund + ".sig"
+                if forespoergsel:
+                    sig_url += "?" + forespoergsel
                 async with httpx.AsyncClient(timeout=30,
                                              follow_redirects=True) as c:
-                    sr = await c.get(self.config.update_url.split("?")[0] + ".sig")
+                    sr = await c.get(sig_url)
                     if sr.status_code == 200:
                         signatur = base64.b64decode(sr.text.strip(),
                                                     validate=False)
@@ -2027,7 +2083,14 @@ class LivlineUI:
             import tkinter.font as tkfont
             SKRIFT_PX = tkfont.Font(root=self.root,
                                     font=FONT_BODY).metrics("linespace")
-        except Exception:
+        except Exception as e:
+            # SIG DET HØJT (4.96). Her stod før en tavs nulstilling.
+            # SKRIFT_PX er det ene sted, alt der skal fylde noget spørger
+            # — bliver den 0, regner hele layoutet forkert, og det ser
+            # ikke ud som en fejl. Det er samme tavse fejltype, der lod
+            # baggrundslyset være i stykker i halvanden måned.
+            log.warning("Kunne ikke måle skriftens linjehøjde (%s) — "
+                        "layoutet kan blive forkert", e)
             SKRIFT_PX = 0
 
         just = "center"      # alt indhold centreres (bobler styres af side)
@@ -2700,6 +2763,31 @@ class LivlineUI:
                 # jeg skrev den.
                 er = self._skaerm_laest()
                 self._vaagen_nu = er if er is not None else vaagen
+                # DAGSLYSSTYRKEN SÆTTES ÉN GANG VED OPSTART (4.96).
+                #
+                # Hidtil satte INGEN dagslysstyrken. Målt på fire
+                # maskiner: 2093 af 6818 = 30,7 %, uændret gennem 13.370
+                # målinger over tre døgn. Det tal er ikke valgt — det er
+                # hvad Ubuntu-installationen tilfældigvis efterlod
+                # panelet på. Den næste brugte maskine kan lige så godt
+                # starte på 10 % eller 100 %, og ingen ville opdage det,
+                # før en familie ringede og sagde, at skærmen var svær
+                # at læse.
+                #
+                # Og der fandtes INGEN måde at ændre den på en leveret
+                # maskine: "lysstyrke" i config blev kun brugt i
+                # nødudgangen om natten, og en skrivning til /sys over
+                # SSH overlever ikke næste genstart. En for mørk skærm
+                # hos en familie var altså en køretur.
+                #
+                # DETTE BRYDER IKKE "mål, skriv ikke". Det er ÉN
+                # skrivning ved opstart, ikke en løkke. Den fejl, der
+                # kostede fem dage, var en skrivning hvert 30. sekund.
+                #
+                # Kun om dagen. Er det nat ved opstart, ejer nattens
+                # egen logik skærmen, og en dagstyrke ville tænde den.
+                if not nat:
+                    self._baglys(None)
             if vaagen != self._vaagen_nu:
                 self._vaagen_nu = vaagen
                 self._skift_skaerm(vaagen)
@@ -2893,11 +2981,31 @@ class LivlineUI:
 
         KALDES KUN VED SKIFT (fra v4.94). Den skrev før hver runde, og så
         slog den sig med GNOME's dæmpning: appen satte fuld styrke, GNOME
-        dæmpede et halvt minut senere, og lyset vandrede hele dagen. Nu
-        skriver den to gange i døgnet: 0 ved nattens begyndelse, og
-        config-værdien igen om morgenen. Resten af dagen ejer GNOME
-        lysstyrken, og hvor lyst der så er, bestemmes af
-        'idle-brightness' (install.sh sætter den)."""
+        dæmpede et halvt minut senere, og lyset vandrede hele dagen.
+
+        HER STOD TIDLIGERE, at "resten af dagen ejer GNOME lysstyrken, og
+        hvor lyst der så er, bestemmes af 'idle-brightness' (install.sh
+        sætter den)". DET VAR MÅLT FORKERT (10.10).
+
+        GNOME dæmper aldrig, fordi appen holder en inhibit. Derfor kommer
+        'idle-brightness' aldrig i spil, og den indstilling er fjernet
+        igen i install.sh v4.96. Målingen, der afviste påstanden: 20
+        aflæsninger over 40 sekunder med et tastetryk midtvejs — lyset
+        stod fladt på 2093, og bl_power på 0. Havde GNOME dæmpet, ville
+        tallet være sprunget op ved tastetrykket.
+
+        Kommentaren er værd at bevare som advarsel: den stod og forklarede
+        noget, der ikke skete, og den lød fornuftig. Det er samme fejltype
+        som de fire indstillinger, der var sat rigtigt og ikke gjorde
+        noget.
+
+        SÅDAN ER DET NU. Funktionen kaldes tre steder, og alle tre er
+        skift — aldrig i en løkke:
+          1. ÉN gang ved opstart, hvis det er dag: dagslysstyrken sættes
+             ud fra config, så den ikke er et tilfælde arvet fra den
+             brugte maskines Ubuntu-installation (4.96)
+          2. Nattens nødudgang, hvis GNOME ikke fik skærmen slukket
+          3. Om morgenen, men KUN for at fortryde punkt 2"""
         try:
             import glob
             mapper = glob.glob("/sys/class/backlight/*/")
@@ -3436,6 +3544,31 @@ class LivlineUI:
                         f"opstart.")
                 except Exception as e:
                     log.warning("Kunne ikke melde historikfejl: %s", e)
+            # EN AFBRYDELSE, DER ER OVERSTÅET, SKAL STADIG MELDES.
+            # Maskinen kan ikke sige til, MENS nettet er væk — beskeden
+            # skulle gå over netop den forbindelse, der mangler. Men den
+            # måler udfaldet præcist, og den kan sige det bagefter.
+            #
+            # Uden den her ville Ulrik aldrig vide, at maskinen hos en
+            # familie havde været offline i tyve minutter — eller i to
+            # dage. Kun hvis han tilfældigvis stod og kiggede på skærmen.
+            # Gentagne korte udfald er netop det tidlige tegn på et
+            # dårligt netsted.
+            if self.bot.net_afbrud_sek is not None:
+                vaek = self.bot.net_afbrud_sek
+                self.bot.net_afbrud_sek = None
+                try:
+                    self.bot.send_admin(
+                        f"📶 {self.config.machine_name} var uden "
+                        f"forbindelse i {int(vaek // 60)} min "
+                        f"{int(vaek % 60)} sek.\n\n"
+                        f"Den er på nettet igen nu, og beskeder sendt "
+                        f"imens er kommet frem. Maskinen kunne ikke sige "
+                        f"til undervejs — den besked skulle gå over netop "
+                        f"den forbindelse, der manglede.\n\n"
+                        f"Sker det tit, er det netstedet, der skal ses på.")
+                except Exception as e:
+                    log.warning("Kunne ikke melde netafbrydelse: %s", e)
         except Exception as e:
             log.warning("Fejl i beskedløkken: %s", e)
         finally:
