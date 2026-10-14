@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Livline-PC installationsscript (Ubuntu 26.04 LTS)
-INSTALL_VER="4.95"
+INSTALL_VER="4.96"
 # Brug:  sudo bash install.sh
 # Forudsætning: livline_bot.py ligger i samme mappe.
 #
@@ -272,6 +272,17 @@ print(json.dumps({
     "media_dir": "/var/lib/livline/media",
     "whitelist_path": "/var/lib/livline/whitelist.json",
     "update_url": os.environ["UPDATE_URL"],
+    # DAGSLYSSTYRKEN SKRIVES MED (4.96), selv om appen har samme
+    # standard. Grunden er ikke teknisk, men menneskelig: en indstilling,
+    # der ikke står i filen, findes ikke for den, der åbner filen. Og den
+    # her SKAL kunne findes — viser en stue sig lysere end forventet,
+    # rettes tallet her og maskinen genstartes. Det er forskellen på en
+    # linje og en køretur.
+    #
+    # 30 er målt, ikke valgt: fire maskiner har kørt på 2093 af 6818 =
+    # 30,7 % gennem 13.370 målinger, og de er set på i en uge. Før satte
+    # ingen tallet — det var hvad Ubuntu efterlod panelet på.
+    "lysstyrke": 30,
 }, ensure_ascii=False, indent=4))
 PYEOF
 python3 -c 'import json,sys; json.load(open("/etc/livline/config.json"))' || {
@@ -314,24 +325,47 @@ fi
 # findes endnu ikke. Værdien kontrolleres i stedet under indkøringen, på
 # en kørende maskine.
 #
-# Risikoen, dette fanger, er reel: forsvinder nøglen ved en
-# Ubuntu-opdatering, bliver dagstyrken GNOMEs 30 % — og det er for mørkt
-# på tre meters afstand, uden at nogen får det at vide.
-echo "-- Tjekker, at dagstyrkens indstilling findes..."
-if ! gsettings range org.gnome.settings-daemon.plugins.power \
-        idle-brightness >/dev/null 2>&1; then
-    echo "FEJL: nøglen 'idle-brightness' findes ikke i GNOMEs skemaer på"
-    echo "      denne Ubuntu-version. Dagstyrken kan ikke sættes, og"
-    echo "      skærmen vil dæmpe til 30 %, som er for mørkt på afstand."
-    echo
-    echo "      Det skal løses, før maskinen bygges. Installation afbrudt."
-    exit 1
-fi
-echo "   idle-brightness findes i skemaet ✔"
+# FJERNET I 4.96: KONTROLLEN AF 'idle-brightness'.
+#
+# Her stod en hård kontrol, der kunne afbryde hele installationen, hvis
+# GNOME-nøglen 'idle-brightness' ikke fandtes. Begrundelsen lød rigtig:
+# uden den ville dagstyrken blive GNOMEs 30 %, og det var for mørkt.
+#
+# DET VAR MÅLT FORKERT (10.10). GNOME dæmper aldrig, fordi appen holder
+# en inhibit — så 'idle-brightness' kommer aldrig i spil. Målingen, der
+# afviste det: 20 aflæsninger over 40 sekunder med et tastetryk midtvejs.
+# Lyset stod fladt, og bl_power på 0. Havde GNOME dæmpet, ville tallet
+# være sprunget ved tastetrykket.
+#
+# Vi havde altså en indstilling, en kontrol der kunne afbryde en
+# installation, og en advarselslinje i loggen — alt sammen omkring en
+# nøgle uden virkning. Det var den fjerde af den slags, vi fandt.
+#
+# Dagstyrken sættes nu af APPEN, én gang ved opstart, ud fra "lysstyrke"
+# i config. Så kan den også ændres hjemmefra på en leveret maskine, og
+# det kunne den ikke før.
 
 echo "-- Opretter start-script med auto-genstart..."
 cat > /opt/livline/run.sh <<'EOF'
 #!/usr/bin/env bash
+# RUN_VER — VERSIONEN AF DENNE FIL (4.96).
+#
+# Den står her af en konkret grund, fundet 06.10: /opdater udskifter KUN
+# livline_bot.py. run.sh og alle GNOME-indstillingerne bliver stående fra
+# den dag, install.sh sidst kørte på maskinen.
+#
+# En maskine kan altså køre ny app med gamle omgivelser — og det kunne
+# ikke ses udefra. Maskine 01 havde app 4.81 og run.sh fra 27. september
+# med fire indstillinger, der aldrig var ankommet: Orca-genvejen var
+# levende, lydene var tændt, og lysføleren var tændt. Det tog en halv
+# times måling at opdage.
+#
+# Nu skrives den i loggen ved hver opstart, så afvigelsen kan SES.
+# Sammenlign med appens egen version: er de ikke i familie, skal
+# install.sh køres igen. Det er ufarligt — målt 11.10 giver en genkørsel
+# en byte-identisk run.sh (#50).
+RUN_VER="4.96"
+
 # KUN ÉN STARTER AD GANGEN. Uden denne lås kunne to run.sh-løkker køre
 # samtidig (fx efter manuel start under fejlsøgning). De starter hver sin
 # kopi af appen, Telegram tillader kun én forbindelse, kopierne skubber
@@ -361,7 +395,7 @@ for _ in $(seq 1 40); do
     sleep 1
 done
 sleep 5
-logger -t livline "Skrivebordet er klar — starter Livline"
+logger -t livline "Skrivebordet er klar — starter Livline (run.sh v$RUN_VER)"
 
 # Kiosk-indstillinger (kører i den grafiske session — virker på Wayland)
 gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
@@ -384,40 +418,28 @@ gsettings set org.gnome.settings-daemon.plugins.power \
 gsettings set org.gnome.settings-daemon.plugins.power \
     power-button-action 'nothing' 2>/dev/null || true
 
-# GNOME EJER LYSSTYRKEN OM DAGEN — og vi fortæller den, hvor lyst det skal
-# være, i stedet for at skrive imod den.
+# DAGSLYSSTYRKEN SÆTTES IKKE LÆNGERE HER (4.96).
 #
-# idle-brightness er den styrke, GNOME dæmper til, når ingen rører maskinen.
-# Standard er 30 %. For en skærm, der SKAL kunne læses på tre meters afstand
-# uden at nogen rører den, er 30 % i underkanten — og 100 % er værre: målt i
-# drift er fuldt baglys sværere at læse end det halve, fordi det sorte vaskes
-# ud, og det er kontrasten, aldersøjne læser efter.
+# Her stod 'idle-brightness 45' med en lang og fornuftig begrundelse om,
+# at GNOME ejer lysstyrken om dagen, og at vi fortæller den hvor lyst det
+# skal være i stedet for at skrive imod den.
 #
-# 45 % er valgt efter at have prøvet tre niveauer på tre meters afstand.
+# DET VAR FORKERT, OG DET BLEV MÅLT 10.10. GNOME dæmper aldrig, fordi
+# appen holder en inhibit. 'idle-brightness' er den styrke, GNOME dæmper
+# TIL — og når der aldrig dæmpes, bruges tallet aldrig. Alle fire
+# maskiner stod på 2093 af 6818 = 30,7 %, og det var ikke 45 %. Det var
+# hvad Ubuntu-installationen efterlod panelet på.
 #
-# OG DET ER NU DEN ENESTE DAGSTYRKE. Appen skrev før sin egen værdi hvert
-# halve minut, GNOME dæmpede imellem, og lyset vandrede mellem 100 og 30.
-# Fra v4.94 skriver appen kun ved nat og morgen. Ét system, én værdi, intet
-# sving.
-# HER SÆTTES DEN, OG HER MÅ DER IKKE AFBRYDES.
+# Lærestykket fra dengang står stadig og er værd at huske: en
+# BYGGETIDSKONTROL må ikke stå i noget, der kører hver dag. Den hårde
+# kontrol lå først HER i run.sh med "exit 1" — fejlede den, startede
+# appen aldrig, og der stod et tomt skrivebord i en stue.
 #
-# Jeg skrev først kontrollen med "exit 1" ind HER — altså inde i run.sh,
-# som kører ved hver session. Fejlede tjekket, afsluttede run.sh, og appen
-# startede aldrig: tomt skrivebord i en stue, og ingen til at starte den
-# igen. Fundet i en udefrakommende gennemgang samme dag.
-#
-# Lærestykket er værd at huske, for fejlen er let at gentage: en
-# BYGGETIDSKONTROL må ikke stå i noget, der kører hver dag. Her, i
-# run.sh, er den rigtige opførsel at prøve, logge hvis det går skævt, og
-# KØRE VIDERE. En skærm med forkert lysstyrke er til at leve med. En
-# skærm uden Livline er ikke.
-#
-# Den hårde kontrol, der kan afbryde, står i installationens egen del.
-if ! gsettings set org.gnome.settings-daemon.plugins.power \
-        idle-brightness 45 2>/dev/null; then
-    logger -t livline "ADVARSEL: kunne ikke sætte idle-brightness — \
-dagstyrken bliver GNOMEs standard"
-fi
+# NU SÆTTER APPEN DEN SELV, én gang ved opstart, ud fra "lysstyrke" i
+# config.json. To ting vindes ved det: hver maskine får det SAMME tal i
+# stedet for hvad der lå i den brugte computer, og værdien kan ændres på
+# en leveret maskine med en linje i config og en genstart. Før var en
+# for mørk skærm hos en familie en køretur.
 
 # LYSSENSOREN SKAL VÆRE SLÅET FRA — og kun den.
 #
@@ -535,6 +557,27 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys \
     screenreader "@as []" 2>/dev/null || true
 gsettings set org.gnome.desktop.a11y.applications \
     screen-reader-enabled false 2>/dev/null || true
+
+# TOUCHPADDET SLÅS FRA (4.96).
+#
+# Et touchpad er KAPACITIVT — det måler et elektrisk felt, ikke tryk. Og
+# tastaturdækkenet er papir. Fundet ved praktisk brug 07.10: man kan
+# betjene trackpaddet TVÆRS GENNEM dækkenet, uden at det ligner noget.
+#
+# Appen skjuler musemarkøren, men skjult er ikke slået fra. En hånd, der
+# hviler på dækkenet, flytter en markør, ingen kan se, og et tryk klikker
+# et sted, ingen ved hvor. Brugeren kan ikke fortælle, hvad der skete.
+#
+# DETTE ER ET BÆLTE, IKKE LØSNINGEN. Den rigtige rettelse er i BIOS:
+# Config -> Keyboard/Mouse -> slå både "Touch Pad" og "TrackPoint" fra.
+# Den ligger under styresystemet, kan ikke sættes tilbage af software og
+# overlever en geninstallation. Den står i byggevejledningens Fase 0.
+#
+# Denne linje dækker den maskine, hvor BIOS blev glemt. Den dækker IKKE
+# TrackPointen — GNOME regner den som en mus, ikke et touchpad.
+gsettings set org.gnome.desktop.peripherals.touchpad \
+    send-events 'disabled' 2>/dev/null || true
+
 # Kør terminalen — genstart automatisk hvis den lukker/fejler.
 # Rollback: dør programmet 3 gange i træk inden for 20 sek. (fx efter en
 # fejlslagen /opdater), gendannes den seneste fungerende version (.bak).
@@ -1763,9 +1806,22 @@ cat <<'SLUT'
 
 == Færdig ==
 Næste skridt:
- 1. Genstart maskinen — den logger selv ind og starter Livline i fuldskærm.
+
+ 1. ÅBN SELV SAMTALEN MED BOTTEN, FØR DU GENSTARTER.
+    Find den i Telegram på din egen telefon og tryk Start.
+
+    En bot kan ikke skrive først — den kan kun svare i en samtale, DU
+    har åbnet. Uden dette kan maskinen ikke sende dig noget, og ✅ i
+    punkt 2 kommer aldrig. Loggen vil sige "Chat not found", og dit
+    admin_chat_id vil være helt rigtigt.
+
+    Det rammer kun den FØRSTE maskine med en ny bot — altså hver eneste
+    nye kunde. Fundet 06.10, da ✅ aldrig kom på maskine 03.
+
+ 2. Genstart maskinen — den logger selv ind og starter Livline i fuldskærm.
     Du får en ✅-besked i din Telegram, når botten kører
- 2. Bed familien søge botten frem i Telegram og trykke Start (= /start).
+
+ 3. Bed familien søge botten frem i Telegram og trykke Start (= /start).
     De får svar med det samme, og du får en ⚠️-besked med navn, chat_id
     og en godkend-knap. Tryk på den, eller skriv /tilfoej <chat_id> <navn>.
     Navnet i Telegram er selvvalgt — godkend kun en, du selv har bedt om.
