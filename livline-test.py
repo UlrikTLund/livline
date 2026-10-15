@@ -4474,6 +4474,60 @@ def _():
         "tælles bagud på en maskine i en stue"
 
 
+@proev("run.sh kan ikke ændre sig ved et uheld — fingeraftrykket er låst (#87)")
+def _():
+    """run.sh udskiftes IKKE af /opdater. Den kommer kun på en maskine,
+    når install.sh køres, og den bliver derfor liggende i måneder. Et
+    fingeraftryk af den er den eneste måde at se, om to maskiner har
+    samme omgivelser — det brugte vi 15.10 til at opdage, at 01 og
+    02/03/04 ikke havde det.
+
+    DERFOR MÅ DEN IKKE KUNNE ÆNDRE SIG VED ET UHELD, og det kunne den:
+
+    Samme dag blev der skrevet otte kommentarlinjer ind i install.sh
+    lige over RUN_VER — for at forklare, at run.sh IKKE var ændret.
+    Men RUN_VER står INDE i den heredoc, der skrives ud som run.sh.
+    Kommentaren blev altså en del af filen. En kommentar inde i en
+    heredoc er ikke en kommentar; den er indhold.
+
+    Det blev først opdaget, da md5sum på maskine 04 ikke stemte med
+    01's efter en genkørsel — tre timer og en halv installation senere.
+
+    NÅR RUN.SH ÆNDRES MED VILJE, skal to ting rettes her: tallet
+    nedenfor OG RUN_VER i install.sh. At det kræver to bevidste
+    handlinger er hele pointen. Fejler denne prøve, er spørgsmålet
+    ikke "hvad er det rigtige tal?" men "ændrede jeg run.sh med
+    vilje, og hvad hedder den version så?"."""
+    import hashlib
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+
+    start = "cat > /opt/livline/run.sh <<'EOF'\n"
+    assert start in t, \
+        "run.sh skrives ikke længere med en citeret heredoc. Ændres det " \
+        "til <<EOF uden anførselstegn, bliver $-tegn i filen udregnet " \
+        "ved installationen i stedet for når run.sh kører"
+    krop = t.split(start, 1)[1].split("\nEOF\n", 1)[0] + "\n"
+
+    VENTET = "1785b9f0f38db6009e115e2151a531be"   # run.sh v4.96
+    faktisk = hashlib.md5(krop.encode()).hexdigest()
+    assert faktisk == VENTET, (
+        f"run.sh er ændret: {faktisk} i stedet for {VENTET}.\n"
+        f"Var det med vilje? Så hæv RUN_VER i install.sh OG tallet i "
+        f"denne prøve.\nVar det ikke? Så ligger der sandsynligvis en "
+        f"kommentar eller en linje inde i heredoc'en, som skulle have "
+        f"stået uden for den.")
+
+    m = re.search(r'^RUN_VER="([^"]+)"', krop, re.M)
+    assert m, "RUN_VER findes ikke i run.sh"
+    assert m.group(1) == "4.96", \
+        f"RUN_VER siger {m.group(1)}, men filen er den samme som 4.96's. " \
+        f"Et versionsnummer, der lyver, er værre end ingen: det er " \
+        f"netop tallet, der skal afsløre forældede omgivelser (#87)"
+
+
 print()
 if FEJL:
     print(f"{len(FEJL)} prøve(r) fejlede: {', '.join(FEJL)}")

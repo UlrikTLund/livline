@@ -346,6 +346,23 @@ fi
 # det kunne den ikke før.
 
 echo "-- Opretter start-script med auto-genstart..."
+# RUN_VER (inde i run.sh nedenfor) FØLGER IKKE APPEN AUTOMATISK.
+#
+# Den hæves kun, når run.sh FAKTISK er ændret. v4.97 rørte kun
+# livline_bot.py, så run.sh skal være byte-identisk med 4.96's — og en
+# maskine, der melder RUN_VER 4.96, har derfor et korrekt og
+# tidssvarende run.sh. Hævede vi tallet alligevel, ville enhver maskine
+# installeret før i dag se forældet ud uden at være det, og så er
+# tallet ubrugeligt til netop det, det er til: at se, om omgivelserne
+# er bagud (#87).
+#
+# OG KOMMENTAREN STÅR HER, UDEN FOR HEREDOC'EN, AF EN MÅLT GRUND.
+# Den blev første gang skrevet INDE i filen, lige over RUN_VER. Men
+# alt mellem linjen nedenfor og EOF skrives ud som run.sh — så otte
+# kommentarlinjer om at filen ikke var ændret, ændrede filen.
+# Opdaget 15.10.2026, fordi md5sum af run.sh på maskine 04 ikke
+# stemte med 01's efter en genkørsel. En kommentar inde i en heredoc
+# er ikke en kommentar; den er indhold.
 cat > /opt/livline/run.sh <<'EOF'
 #!/usr/bin/env bash
 # RUN_VER — VERSIONEN AF DENNE FIL (4.96).
@@ -364,14 +381,6 @@ cat > /opt/livline/run.sh <<'EOF'
 # Sammenlign med appens egen version: er de ikke i familie, skal
 # install.sh køres igen. Det er ufarligt — målt 11.10 giver en genkørsel
 # en byte-identisk run.sh (#50).
-#
-# RUN_VER FØLGER IKKE APPEN AUTOMATISK, OG DET ER MED VILJE.
-# Den hæves kun, når run.sh FAKTISK er ændret. v4.97 rørte kun
-# livline_bot.py, så run.sh er byte-identisk med 4.96 — og en maskine,
-# der melder 4.96, har derfor et korrekt og tidssvarende run.sh.
-# Hævede vi tallet alligevel, ville enhver maskine installeret før i dag
-# se forældet ud, uden at være det, og så er tallet ubrugeligt til netop
-# det, det er til: at se, om omgivelserne er bagud (#87).
 RUN_VER="4.96"
 
 # KUN ÉN STARTER AD GANGEN. Uden denne lås kunne to run.sh-løkker køre
