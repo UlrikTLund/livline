@@ -2930,10 +2930,24 @@ def _():
     # er kontrasten, aldersøjne læser efter, ikke lysmængden.
     #
     # To genbrugsskærme er sjældent ens, så det skal kunne sættes pr.
-    # maskine. Men standarden bliver 100, så maskiner i drift ikke ændrer
-    # sig af sig selv ved en opdatering.
-    assert lv.Config.load().lysstyrke == 100, \
-        "standarden er ikke længere 100 — maskiner i drift ville ændre sig"
+    # maskine.
+    #
+    # STANDARDEN ÆNDRET FRA 100 TIL 30 I v4.96, og det er ikke et skøn.
+    # Fire maskiner har kørt på 2093 af 6818 = 30,7 % gennem 13.370
+    # målinger over tre døgn, og de er set på i en uge: "skærmen har den
+    # ikke bedre af lavere lysstyrke, de virker skarpe nok" (11.10).
+    #
+    # Før satte INGEN dagslysstyrken. 30,7 % var hvad Ubuntu-
+    # installationen tilfældigvis efterlod panelet på, og den næste
+    # brugte maskine kunne lige så godt starte på 10 % eller 100 %.
+    # 100 var desuden en fælde: den blev kun brugt i nattens nødudgang,
+    # så ramte man den én nat, sprang skærmen til fuld styrke næste
+    # morgen og blev der.
+    assert lv.Config.load().lysstyrke == 30, \
+        "standarden er ikke 30 — det er det MÅLTE tal, ikke et skøn, " \
+        "og 100 var både uvirksom og en fælde"
+    assert lv.LYSSTYRKE_STANDARD == 30, \
+        "LYSSTYRKE_STANDARD og Config er ikke enige"
 
     # Tallet skal faktisk bruges, når baglyset sættes
     kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
@@ -2947,7 +2961,8 @@ def _():
     # En forkert værdi må ALDRIG falde stille tilbage
     for daarlig in (0, -5, 200, "halvt", [50], None):
         v = lv._lysstyrke(daarlig)
-        assert v == 100, f"{daarlig!r} gav {v}, ikke 100"
+        assert v == lv.LYSSTYRKE_STANDARD, \
+            f"{daarlig!r} gav {v}, ikke {lv.LYSSTYRKE_STANDARD}"
     for god in (1, 50, 70, 100):
         assert lv._lysstyrke(god) == god
     assert "Ugyldig \"lysstyrke\"" in kilde, \
@@ -3245,10 +3260,22 @@ def _():
         "låsens afslutning kan ikke genkendes — så kan prøven ikke skelne " \
         "den fra en afbrydelse ved fejl"
 
-    # Og dagstyrken skal stadig SÆTTES her, bare uden at kunne vælte noget.
-    assert "idle-brightness" in kode, "dagstyrken sættes ikke ved opstart"
-    assert "ADVARSEL" in blok, \
-        "lykkes dagstyrken ikke, siges det ikke i loggen"
+    # DAGSTYRKEN SÆTTES IKKE LÆNGERE I run.sh (4.96), og prøven er vendt
+    # om. Her stod før: assert "idle-brightness" in kode.
+    #
+    # Den påstand var målt forkert. GNOME dæmper aldrig, fordi appen
+    # holder en inhibit — så 'idle-brightness' er den styrke, der dæmpes
+    # TIL, og der dæmpes aldrig. Målingen, der afviste den: 20
+    # aflæsninger over 40 sekunder med et tastetryk midtvejs, lyset fladt
+    # på 2093 og bl_power på 0.
+    #
+    # Nu sætter APPEN styrken én gang ved opstart ud fra config. Det er
+    # bedre af en grund, der ikke er teknisk: en værdi i config kan
+    # ændres på en LEVERET maskine. En gsettings-nøgle i run.sh kunne
+    # kun ændres ved at køre install.sh igen.
+    assert "idle-brightness" not in kode, \
+        "idle-brightness er tilbage i run.sh — den nøgle bruges aldrig, " \
+        "fordi appens inhibit forhindrer GNOME i at dæmme. Målt 10.10."
 
 
 @proev("maskinen laver ALDRIG lyd — også når den ikke bliver bedt om det")
@@ -3377,35 +3404,44 @@ def _():
     kode = "\n".join(l for l in t.splitlines()
                      if not l.lstrip().startswith("#"))
 
-    # idle-brightness er nu den ENESTE dagstyrke. Uden den dæmper GNOME til
-    # 30 %, og det er i underkanten på tre meters afstand.
-    assert "idle-brightness" in kode, \
-        "GNOME dæmper til sine 30 % — der er ikke sagt, hvor lyst det skal være"
+    # DENNE PRØVE ER VENDT OM I v4.96, OG DET ER VÆRD AT LÆSE HVORFOR.
+    #
+    # Her stod to påstande, som begge lød rigtige og begge var forkerte:
+    #   "idle-brightness er nu den ENESTE dagstyrke"
+    #   "uden den dæmper GNOME til 30 %, og det er i underkanten"
+    #
+    # GNOME DÆMPER ALDRIG. Appen holder en inhibit, og 'idle-brightness'
+    # er netop den styrke, der dæmpes TIL. Når der ikke dæmpes, bruges
+    # tallet aldrig.
+    #
+    # Målingen, der afviste det (10.10): 20 aflæsninger over 40 sekunder
+    # med et tastetryk midtvejs. Lyset stod fladt på 2093 og bl_power på
+    # 0. Havde GNOME dæmpet, ville tallet være sprunget ved trykket.
+    #
+    # Vi havde altså en indstilling, en hård kontrol der kunne afbryde en
+    # installation, en advarselslinje i loggen — OG DENNE PRØVE, der
+    # vogtede over dem. Fire lag omkring en nøgle uden virkning. Prøven
+    # gjorde det værre: den gjorde fejlen svær at fjerne, fordi den ville
+    # fejle, hvis nogen prøvede.
+    #
+    # Lærestykket: en prøve kan beskytte en antagelse lige så godt som en
+    # sandhed. Derfor skal en prøve helst pege på en MÅLING.
+    assert "idle-brightness" not in kode, \
+        "idle-brightness er tilbage. Den nøgle bruges aldrig, fordi " \
+        "appens inhibit forhindrer GNOME i at dæmpe. Målt 10.10 med 20 " \
+        "aflæsninger over 40 sekunder."
+    assert "gsettings range" not in kode, \
+        "den hårde kontrol af idle-brightness er tilbage — den kan " \
+        "afbryde en installation på grund af en nøgle, der ikke bruges"
 
-    # OG DEN SKAL KONTROLLERES. "2>/dev/null || true" fortæller ingenting:
-    # forsvinder nøglen ved en Ubuntu-opdatering, bliver dagstyrken forkert
-    # i tavshed, og det opdages først, når en pårørende siger, at skærmen
-    # er mørk. Samme fejltype som baggrundslyset, der ikke virkede i
-    # halvanden måned, fordi fejlen blev slugt.
-    # OG DEN SKAL KONTROLLERES — MEN PÅ BYGGETID, IKKE I run.sh.
-    #
-    # Jeg skrev først kontrollen med "exit 1" ind i run.sh, som kører ved
-    # hver session. Fejlede tjekket, afsluttede run.sh, og appen startede
-    # aldrig: tomt skrivebord i en stue. Nu ligger den hårde kontrol i
-    # installationens egen del, hvor man står ved maskinen.
-    #
-    # Og der kontrolleres kun, at NØGLEN FINDES. Værdien kan ikke måles
-    # der: install.sh kører som root, og root har sine egne indstillinger.
-    # Værdien kontrolleres under indkøringen, på en kørende maskine.
-    assert "gsettings range" in kode, \
-        "der kontrolleres ikke, om nøglen til dagstyrken overhovedet " \
-        "findes i GNOMEs skemaer — forsvinder den ved en opdatering, " \
-        "bliver skærmen mørk i tavshed"
-    # Kontrollen må IKKE stå i run.sh: den afbryder, og så starter appen ikke.
-    run = t.split("/opt/livline/run.sh <<", 1)[1].split("\nEOF\n", 1)[0]
-    assert "gsettings range" not in run, \
-        "byggetidskontrollen er havnet i run.sh — den afbryder, og så " \
-        "står skærmen tom i en stue"
+    # DAGSTYRKEN SÆTTES NU AF APPEN, og den skal kunne ændres UDEFRA.
+    # Det er den egentlige gevinst: en for mørk skærm hos en familie var
+    # før en køretur, fordi værdien lå i et script på maskinen. Nu står
+    # den i config.json, hvor den kan rettes over Tailscale.
+    assert '"lysstyrke"' in t, \
+        "install.sh skriver ikke lysstyrken i config.json — så findes " \
+        "indstillingen ikke for den, der åbner filen, og en for mørk " \
+        "skærm bliver en køretur i stedet for en linje"
 
     # INGEN INHIBIT. Den forhindrer GNOME i at dæmpe, og dæmpningen ER
     # løsningen. Den var heller ikke årsagen til blinket: målt 05.10
@@ -4166,6 +4202,276 @@ def _():
         "mærket sættes ikke tilbage, når svaret ikke nåede frem"
     assert "_refresh_topbar" in fejl, \
         "hovedet opdateres ikke, så mærket ses først et halvt sekund senere"
+
+
+# =====================================================================
+# v4.96 — fem rettelser, fem prøver.
+#
+# Hver af dem svarer til noget, der blev MÅLT i oktober 2026, ikke til
+# noget, der blev tænkt. Det står i hver prøve, så den kan afvises igen,
+# hvis en senere måling siger noget andet.
+# =====================================================================
+
+@proev("en overstået netafbrydelse meldes til administrator (#91)")
+def _():
+    """Maskinen kan ikke sige til, MENS nettet er væk — beskeden skulle
+    gå over netop den forbindelse, der mangler. Men den måler udfaldet
+    præcist, og den kan sige det BAGEFTER.
+
+    MÅLT PÅ 02 OG 03 (10.-12.10): loggen sagde "Forbindelsen er tilbage
+    efter 20 min 0 sek" — nøjagtigt. Oplysningen fandtes altså allerede
+    og blev kastet væk. Ulrik ville aldrig vide, at en maskine hos en
+    familie havde været offline i tyve minutter eller i to dage.
+
+    Kravet i indkøringen sagde før "⚠️ efter 3 min". Det kunne ikke
+    opfyldes og var min fejl."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+
+    assert hasattr(lv, "NET_MELD_GRAENSE_SEK"), \
+        "der er ingen grænse for, hvor langt et udfald skal være"
+    assert lv.NET_MELD_GRAENSE_SEK >= 120, \
+        "grænsen er for lav — et WiFi, der hikker, ville melde flere " \
+        "gange om ugen, og så holder man op med at læse beskederne"
+
+    vagt = kilde.split("def _netvagt")[1].split("\n    def ")[0]
+    assert "net_afbrud_sek" in vagt, \
+        "netvagten gemmer ikke udfaldets længde, så ingen kan melde den"
+    assert "NET_MELD_GRAENSE_SEK" in vagt, \
+        "grænsen bruges ikke — korte hik ville fylde administrators skærm"
+
+    # Netvagten er en almindelig tråd og MÅ IKKE selv kalde Telegram.
+    # Afsendelsen skal ske på bot-lagets egen løkke, som alt andet.
+    assert "send_admin" not in vagt, \
+        "netvagten sender selv — den kører i en anden tråd end bot-laget"
+
+    poll = kilde.split("def _poll_inbox")[1].split("\n    def ")[0]
+    assert "net_afbrud_sek" in poll and "send_admin" in poll, \
+        "beskeden sendes ikke fra beskedløkken, hvor den hører hjemme"
+
+
+@proev("cache-omgåelsen følger med på .sig-adressen (#90)")
+def _():
+    """Adressen bruges med ?frisk=<tid> for at komme uden om GitHubs
+    mellemlager. Før klippede vi hele forespørgselsdelen af, FØR ".sig"
+    blev sat på — og så blev koden hentet frisk, mens underskriften kom
+    gennem mellemlageret.
+
+    Følgen: ny kode plus gammel signatur. Maskinen afviser korrekt, men
+    siger "signaturen passer ikke til koden" — og så leder man efter en
+    forkert nøgle i stedet for et mellemlager. Fail-closed med en
+    vildledende forklaring, altid den aften man har travlt.
+
+    Fundet ved at læse koden 10.10, ikke i drift."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    blok = kilde.split("def _cmd_update")[1].split("\n    def ")[0]
+
+    assert '.split("?")[0] + ".sig"' not in blok, \
+        "forespørgselsdelen klippes stadig af — så hentes underskriften " \
+        "gennem GitHubs mellemlager, mens koden hentes frisk"
+    assert "partition" in blok and "sig_url" in blok, \
+        "der bygges ikke en .sig-adresse, der bevarer cache-omgåelsen"
+
+
+@proev("dagslysstyrken sættes én gang ved opstart — og kun om dagen (#86)")
+def _():
+    """Før satte INGEN dagslysstyrken. Fire maskiner stod på 2093 af
+    6818 = 30,7 % gennem 13.370 målinger — og det tal var ikke valgt. Det
+    var hvad Ubuntu-installationen efterlod panelet på. Den næste brugte
+    maskine kunne lige så godt starte på 10 %.
+
+    Og der fandtes ingen måde at ændre den på en LEVERET maskine:
+    "lysstyrke" blev kun brugt i nattens nødudgang, og en skrivning til
+    /sys over SSH overlever ikke næste genstart.
+
+    DETTE BRYDER IKKE "mål, skriv ikke". Det er ÉN skrivning ved
+    opstart. Fejlen, der kostede fem dage, var en skrivning hvert 30.
+    sekund."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    vagt = kilde.split("def _nat_vagt")[1].split("\n    def ")[0]
+
+    # Den skal ligge i FØRSTE-RUNDE-grenen, ikke i løkkens krop.
+    foerste = vagt.split('if not hasattr(self, "_vaagen_nu")')[1] \
+                  .split("if vaagen != self._vaagen_nu")[0]
+    assert "_baglys(None)" in foerste, \
+        "dagslysstyrken sættes ikke ved opstart — så arver maskinen " \
+        "det tal, den brugte computer tilfældigvis havde"
+    assert "if not nat" in foerste, \
+        "styrken sættes uden at se på klokken — om natten ville det " \
+        "tænde en skærm, der skulle være slukket"
+
+    # Og den må IKKE havne i selve løkken. Det var hele blinket.
+    krop = vagt.split("if vaagen != self._vaagen_nu")[1]
+    assert "_baglys(None)" not in krop, \
+        "lysstyrken skrives i løkkens krop — det er præcis den fejl, " \
+        "der gav 15 sekunder tændt og 15 slukket i døgndrift"
+
+
+@proev("run.sh har et versionsnummer, så gamle omgivelser kan SES (#87)")
+def _():
+    """/opdater udskifter KUN livline_bot.py. run.sh og alle
+    GNOME-indstillingerne bliver stående fra den dag, install.sh sidst
+    kørte.
+
+    MÅLT PÅ 01 (06.10): app 4.81, run.sh fra 27. september, og fire
+    indstillinger der aldrig var ankommet. Orca-genvejen var levende,
+    lydene tændt, lysføleren tændt. Det tog en halv times måling at
+    opdage, fordi afvigelsen ikke kunne ses nogen steder."""
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    run = t.split("/opt/livline/run.sh <<", 1)[1].split("\nEOF\n", 1)[0]
+
+    assert "RUN_VER=" in run, \
+        "run.sh har intet versionsnummer — så kan man ikke se, at " \
+        "omgivelserne er ældre end appen"
+    assert "RUN_VER" in run.split("Skrivebordet er klar")[0] or \
+           "$RUN_VER" in run, \
+        "versionen skrives ikke i loggen ved opstart, så den kan kun " \
+        "findes ved at læse filen"
+
+
+@proev("touchpaddet slås fra, og sluttekstens rækkefølge kan følges (#88, #84)")
+def _():
+    """To fund fra praktisk brug.
+
+    #88: et touchpad er KAPACITIVT og mærker fingeren gennem papir.
+    Tastaturdækkenet SKJULER trackpaddet uden at slå det fra. Fundet
+    07.10 ved at lægge en stak papirer på en maskine.
+
+    #84: en bot kan ikke skrive først. Admin skal selv trykke Start, før
+    maskinen kan sende noget. Sluttekstens punkt 1 lovede en ✅-besked,
+    som ikke kunne komme. Fundet 06.10, da ✅ aldrig kom på maskine 03 —
+    og det rammer hver eneste NYE kunde."""
+    sti = pathlib.Path(lv.__file__).parent / "install.sh"
+    if not sti.exists():
+        return
+    t = sti.read_text(encoding="utf-8")
+    kode = "\n".join(l for l in t.splitlines()
+                     if not l.lstrip().startswith("#"))
+
+    assert "peripherals.touchpad" in kode and "send-events" in kode, \
+        "touchpaddet slås ikke fra — og dækkenet er papir, så det " \
+        "virker tværs igennem"
+
+    slut = t.split("== Færdig ==")[-1]
+    assert "Start" in slut and "ikke skrive først" in slut, \
+        "sluttekstens rækkefølge er stadig forkert: den lover en " \
+        "✅-besked, før samtalen med botten er åbnet"
+
+
+@proev("/genstart mapper vinduet om — og gør det ÉN gang, ikke i en løkke (#98, #103)")
+def _():
+    """Den 15.10.2026 stod maskine 01 i otte timer med Ubuntu-skrivebordet
+    på skærmen. Appen kørte og svarede på Telegram hele tiden. Der fandtes
+    ingen vej til at rette det hjemmefra: /vis knapper svarede "Maskinen
+    bruger allerede 'knapper'. Intet ændret." Nødudgangen var spærret,
+    præcis fordi der ikke var noget at ændre.
+
+    FIRE TING HOLDES FAST HER, og hver af dem er noget, vi kan komme til
+    at ødelægge senere uden at opdage det.
+
+    1. withdraw() FØR deiconify(). Det er forskellen på denne og
+       vinduesvagten. Vagten sætter tilstande, der allerede er sat, og
+       compositoren ser derfor ingen forskel. Kun en NY mapning virker —
+       målt med xdotool windowunmap/windowmap.
+
+    2. -fullscreen sættes i _genmap selv, ikke af vagten fem sekunder
+       senere. Ved prøven kom vinduet frem i lille størrelse først, og
+       kommer der en besked i det øjeblik, måler _spalte() ombrydningen
+       på den lille bredde.
+
+    3. ÉN gang ved opstart. Ikke en løkke. Opgave #71 kostede fem dage på
+       netop den fejltype: en vagt, der rettede og rettede.
+
+    4. Bot-laget må ikke røre Tkinter. Kommandoen sætter et flag;
+       vinduestråden udfører. Samme mønster som netafbrydelsen (#91)."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+
+    assert hasattr(lv.LivlineUI, "_genmap"), \
+        "_genmap findes ikke — så er der ingen måde at hente vinduet frem"
+
+    import inspect
+    krop = inspect.getsource(lv.LivlineUI._genmap)
+    assert krop.index("withdraw") < krop.index("deiconify"), \
+        "withdraw() skal komme FØR deiconify() — ellers er det ikke en " \
+        "ny mapning, og så gør _genmap det samme som vinduesvagten, " \
+        "altså ingenting"
+    assert "-fullscreen" in krop, \
+        "_genmap sætter ikke -fullscreen selv. Så står vinduet småt, " \
+        "indtil vagten rammer det, og en besked i mellemtiden får " \
+        "forkert ombrydningsbredde"
+
+    # Kommandoen findes og er kun for administrator
+    assert "CommandHandler(\"genstart\"" in kilde, \
+        "/genstart er ikke registreret som kommando"
+    linje = [l for l in kilde.splitlines()
+             if "CommandHandler(\"genstart\"" in l][0]
+    assert "admin" in linje, \
+        "/genstart er ikke begrænset til administrator"
+
+    # Bot-laget må IKKE kalde Tkinter direkte
+    cmd = inspect.getsource(lv.Bot._cmd_genstart)
+    for forbudt in ("withdraw", "deiconify", "self.root", "_genmap"):
+        assert forbudt not in cmd, \
+            f"_cmd_genstart rører {forbudt} direkte. Bot-laget kører i " \
+            f"sin egen tråd og må aldrig røre Tkinter — det giver et " \
+            f"vindue, der fryser timer senere uden spor i loggen"
+    assert "genmap_oensket" in cmd, \
+        "/genstart sætter ikke flaget, vinduestråden samler op"
+
+    # Den automatiske kørsel: én gang, bestilt fra run()
+    run_krop = inspect.getsource(lv.LivlineUI.run)
+    assert "GENMAP_OPSTART_MS" in run_krop, \
+        "den automatiske mapning efter opstart er ikke bestilt i run()"
+    assert isinstance(lv.GENMAP_OPSTART_MS, int) and \
+        lv.GENMAP_OPSTART_MS >= 5_000, \
+        "GENMAP_OPSTART_MS er for lav. Vi VED ikke, hvornår sessionen " \
+        "er klar — rammer det ene forsøg for tidligt, står maskinen i " \
+        "stykker uden at melde noget. Se #98"
+
+    # DEN VIGTIGSTE: _genmap må ikke bestille sig selv igen.
+    #
+    # Skrevet som et mønster og ikke som "ordet findes i kroppen":
+    # kroppen kalder i forvejen after() til _juster_bredder, og en prøve,
+    # der bare leder efter "after", ville rammes af den. Her ledes der
+    # efter en tidsbestilling, der peger PÅ _genmap.
+    assert not re.search(r"after(_idle)?\([^)]*_genmap", krop), \
+        "_genmap bestiller sig selv igen — det er en løkke, ikke en " \
+        "rettelse. Se opgave #71, som kostede fem dage på netop det"
+
+
+@proev("/genstart kvitterer — ellers ved man ikke, om den nåede frem (#104)")
+def _():
+    """Maskinen kan ikke ses. Når noget er galt med skærmen, er
+    kvitteringen den eneste oplysning, administrator har.
+
+    Og den skal sige det HØJT, når det mislykkedes. En /genstart, der
+    fejler i tavshed, efterlader ham i troen på, at skærmen er i orden —
+    og det er værre end ingen kommando."""
+    kilde = pathlib.Path(lv.__file__).read_text(encoding="utf-8")
+    # Der skæres på DEN linje, hvor flaget LÆSES — ikke på hvor det
+    # oprettes i Bot.__init__. De to ligner hinanden nok til at en
+    # skødesløs split ville måle et helt andet sted i filen.
+    assert "if self.bot.genmap_oensket:" in kilde, \
+        "flaget læses ikke i vinduestråden — så bliver /genstart aldrig " \
+        "udført, uanset hvad kommandoen svarer"
+    blok = kilde.split("if self.bot.genmap_oensket:", 1)[1] \
+                .split("finally:", 1)[0]
+
+    assert "send_admin" in blok, \
+        "der kvitteres ikke for /genstart — så ved administrator ikke, " \
+        "om kommandoen nåede frem til en maskine, han ikke kan se"
+    assert "❌" in blok or "IKKE" in blok, \
+        "der siges ikke til, når mapningen MISLYKKEDES. En tavs fejl " \
+        "efterlader administrator i troen på, at skærmen er i orden"
+
+    import inspect
+    krop = inspect.getsource(lv.LivlineUI._genmap)
+    assert "log.info" in krop, \
+        "_genmap skriver ikke i loggen. Tidspunktet for den automatiske " \
+        "mapning er IKKE målt (#98), og uden en log-linje kan det ikke " \
+        "tælles bagud på en maskine i en stue"
 
 
 print()
