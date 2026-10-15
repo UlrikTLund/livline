@@ -4411,7 +4411,7 @@ def _():
         "/genstart er ikke begrænset til administrator"
 
     # Bot-laget må IKKE kalde Tkinter direkte
-    cmd = inspect.getsource(lv.Bot._cmd_genstart)
+    cmd = inspect.getsource(lv.BotWorker._cmd_genstart)
     for forbudt in ("withdraw", "deiconify", "self.root", "_genmap"):
         assert forbudt not in cmd, \
             f"_cmd_genstart rører {forbudt} direkte. Bot-laget kører i " \
