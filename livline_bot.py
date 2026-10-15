@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Livline-PC — Telegram Bot-terminal (Model A: én bot pr. maskine)
-VERSION 4.96
+VERSION 4.97
 
 Versionen står her i linje 4, så den kan ses uden at rulle. Den SKAL
 stemme med VERSION-konstanten længere nede — en prøve håndhæver det, og
@@ -44,6 +44,10 @@ Administration hjemmefra (kun fra admin_chat_id, dvs. din egen Telegram):
                          backup (.bak), udskifter sig selv og genstarter via
                          run.sh. run.sh ruller tilbage til .bak ved crash-loop.
     /indstillinger       vis hvad maskinen FAKTISK bruger
+    /genstart            hent Livline-vinduet frem igen, når skrivebordet
+                         står foran det. Rører hverken historik,
+                         brugerflade eller ukvitterede beskeder — ufarlig
+                         at trykke på, også når intet fejler
     /skaerm              send et billede af brugerens skærm
     /hjaelp              vis kommandoer
 Desuden: ÉN planlagt besked om dagen — ☀️ kl. 8 med oppetid, disk, batteri
@@ -151,7 +155,7 @@ CONFIG_PATH = Path(os.environ.get("LIVLINE_CONFIG", "/etc/livline/config.json"))
 # FINDES DEN IKKE, er signering slået fra — se _tjek_signatur for hvorfor.
 NOEGLE_STI = Path(os.environ.get("LIVLINE_NOEGLE",
                                  "/etc/livline/opdater.pub"))
-VERSION = "4.96"
+VERSION = "4.97"
 # Alle felter config.json må indeholde. Andet betragtes som en tastefejl
 # og meldes til administrator ved opstart.
 KENDTE_FELTER = {
@@ -217,6 +221,47 @@ FELT_MIN = 1              # skrivefeltets højde i linjer, når det er tomt.
                           # præcis når der er brug for den
 FELT_MAX = 6              # ... og det højeste, det må vokse til
 VINDUE_VAGT_TIDLIGE = 12  # antal 5-sekunders tjek af vinduet efter opstart
+# ÉN NY MAPNING AF VINDUET EFTER OPSTART — OG HVORFOR DEN ER NØDVENDIG.
+#
+# Målt 15.10.2026 på maskine 01: efter en genstart bliver GNOME-
+# skrivebordet stående i stedet for Livline. Appen KØRER imens — den
+# svarede på Telegram i otte timer, mens skærmen var ubrugelig.
+#
+# Vinduesvagten gjorde det rigtige hele tiden. Den kalder deiconify(),
+# -topmost, -fullscreen og lift() hvert 5. sekund, og diagnoselinjer
+# viste, at den kørte. Men lift() løfter et vindue, der ALLEREDE er
+# øverst, og -fullscreen er allerede sat. X ser ingen forskel, så der
+# sker ingenting i compositoren. Vagten bad om noget, der allerede var
+# sådan.
+#
+# Det, der virker, er en NY MAPNING. Målt med
+#     xdotool windowunmap <id>; sleep 1; xdotool windowmap <id>
+# og vinduet kom frem med det samme. Altså: fejlen er mapningen, ikke
+# stablingen og ikke fokus.
+#
+# OG VI KAN IKKE SE, OM DET ER NØDVENDIGT. Et vindue, der vises, og et,
+# der ikke gør, er identiske fra alt, der kan måles: Map State siger
+# IsViewable for begge, _NET_WM_STATE siger FULLSCREEN/ABOVE/FOCUSED for
+# begge, _NET_ACTIVE_WINDOW peger på Livline i begge. Shell.Screenshot
+# og Shell.Introspect svarer AccessDenied. winfo_viewable() i Tkinter
+# spørger netop den X-tilstand, der svarer forkert — en status bygget på
+# den ville have meldt GRØNT, mens maskinen stod ubrugelig.
+#
+# Når tilstanden ikke kan aflæses, er svaret ikke at måle bedre. Det er
+# at gøre reparationen ufarlig at udføre uanset hvad — og så udføre den.
+# Var vinduet i stykker, bliver det rettet. Var det i orden, er prisen et
+# kort glimt. Maskinen genstarter kl. 03, hvor ingen ser det.
+#
+# ÉN GANG. IKKE EN LØKKE. Det er forskellen på en rettelse og et nyt
+# blink (opgave #71 kostede fem dage på netop den fejltype).
+#
+# TIDSPUNKTET ER IKKE MÅLT. Vi ved, at en ny mapning virker efter timer.
+# Vi ved IKKE, om den virker 20 sekunder efter opstart, hvor compositoren
+# måske stadig ikke er klar. Rammer det ene forsøg for tidligt, står
+# maskinen i stykker uden at melde noget. Derfor skrives hver udførelse i
+# loggen, så det kan tælles bagud — og derfor skal det efterprøves over
+# mange genstarter, ikke tre. Se opgave #98.
+GENMAP_OPSTART_MS = 20_000
 # DAGSLYSSTYRKEN I PROCENT AF PANELETS MAKSIMUM.
 #
 # 30 er ikke et skøn. Det er den styrke, fire maskiner faktisk har kørt
@@ -745,6 +790,14 @@ class BotWorker:
         # Telegram — det skal ske på bot-lagets egen løkke. Samme mønster
         # som _historik_fejl.
         self.net_afbrud_sek: float | None = None
+        # Sat af /genstart, læst og nulstillet af _poll_inbox.
+        #
+        # SAMME REGEL SOM OVENFOR: bot-laget kører i sin egen tråd og må
+        # ALDRIG røre Tkinter. Gør den det, går vinduet i stykker på en
+        # måde, der er umulig at finde bagefter — den slags fejl viser sig
+        # som et vindue, der fryser timer senere, uden spor i loggen.
+        # Derfor et flag, som vinduestråden selv samler op.
+        self.genmap_oensket: bool = False
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="bot", daemon=True).start()
@@ -857,6 +910,7 @@ class BotWorker:
         app.add_handler(CommandHandler("skaerm", self._cmd_screenshot, admin))
         app.add_handler(CommandHandler("indstillinger", self._cmd_settings, admin))
         app.add_handler(CommandHandler("vis", self._cmd_vis, admin))
+        app.add_handler(CommandHandler("genstart", self._cmd_genstart, admin))
         app.add_handler(CommandHandler("hjaelp", self._cmd_help, admin))
         app.add_handler(CallbackQueryHandler(self._on_godkend, pattern=r"^godkend:"))
         app.add_handler(MessageHandler(~filters.COMMAND, self._on_message))
@@ -1116,6 +1170,7 @@ class BotWorker:
             "/liste — vis whitelist (med F-taster)\n"
             "/indstillinger — vis hvad maskinen faktisk bruger\n"
             "/vis — skift brugerflade (knapper / skriv / enkelte)\n"
+            "/genstart — hent vinduet frem, hvis skrivebordet står foran\n"
             "/skaerm — send et billede af brugerens skærm\n"
             "/opdater — hent og installér ny programversion\n"
             "/hjaelp — denne oversigt")
@@ -1128,6 +1183,44 @@ class BotWorker:
         "knapper": "faste svar, én fælles samtale",
         "skriv": "frit skrivefelt, én fælles samtale",
     }
+
+    async def _cmd_genstart(self, update: Update, _):
+        """Henter Livline-vinduet frem igen, når skrivebordet står foran det.
+
+        HVORFOR DEN FINDES. Den 15.10.2026 stod maskine 01 i otte timer
+        med Ubuntu-skrivebordet på skærmen. Appen kørte og svarede på
+        Telegram hele tiden. Der fandtes ingen måde at rette det hjemmefra:
+
+          /vis knapper  ->  "Maskinen bruger allerede 'knapper'. Intet ændret."
+
+        Den eneste vej til at genstarte brugerfladen kortsluttede, PRÆCIS
+        fordi der ikke var noget at ændre. Hos en familie havde der kun
+        været en køretur tilbage — brugeren kan ikke selv gøre noget, for
+        tastaturet er dækket.
+
+        HVORFOR DEN IKKE GENSTARTER PROCESSEN. Det ville være den
+        nærliggende løsning, og den er en fælde: run.sh ruller koden
+        tilbage til .bak efter tre korte kørsler inden for 20 sekunder.
+        Et planlagt drab markeres med /run/livline-planlagt, som kun root
+        må skrive — og appen kører som kiosk-brugeren. Tre /genstart i
+        træk under fejlsøgning ville altså rulle versionen tilbage midt i
+        det hele, med en ⚠️ om en opdatering, der aldrig fandt sted.
+
+        I stedet gøres det, der er MÅLT virker: en ny mapning af vinduet.
+        Det kræver ingen rettigheder, intet nyt script og ingen ny
+        sudoers-linje — og kan derfor rulles ud med /opdater alene til
+        maskiner, der allerede står i en stue. Se GENMAP_OPSTART_MS.
+
+        Kommandoen rører hverken historik, ukvitterede beskeder eller
+        brugerfladen. Den er ufarlig at trykke på, også når intet fejler,
+        og det er med vilje: en nødudgang må aldrig have en forudsætning.
+        """
+        self.genmap_oensket = True
+        await update.effective_message.reply_text(
+            "🔄 Henter vinduet frem igen…\n\n"
+            "Skærmen blinker et øjeblik. Beskeder og historik rører den "
+            "ikke, og brugerfladen er uændret.\n\n"
+            "Du får svar, når det er gjort.")
 
     async def _cmd_vis(self, update: Update, ctx):
         """Skifter brugerflade uden at nogen skal ud til maskinen.
@@ -2446,6 +2539,11 @@ class LivlineUI:
         self._poll_inbox()
         self._idle_check()
         self._vindue_vagt()
+        # ÉN ny mapning efter opstart. Bestilles her, udføres én gang,
+        # gentages aldrig. Se GENMAP_OPSTART_MS for hele begrundelsen —
+        # kort: vinduet kommer nogle gange ikke frem, ingen kan måle om
+        # det skete, og en ny mapning er den eneste rettelse, der virker.
+        self.root.after(GENMAP_OPSTART_MS, lambda: self._genmap("opstart"))
         self._nat_vagt()
         # Skærmvagten kører for sig, og tættere end nattevagten: den LÆSER
         # hvert 10. sekund, mens nattevagten passer uret hvert 30. En
@@ -2656,6 +2754,50 @@ class LivlineUI:
             return          # vinduet er lukket — vagten stopper med det
         naeste = 5_000 if forsoeg < VINDUE_VAGT_TIDLIGE else 30_000
         self.root.after(naeste, lambda: self._vindue_vagt(forsoeg + 1))
+
+    def _genmap(self, grund: str) -> bool:
+        """Tvinger en NY mapning af vinduet. Den eneste rettelse, der er
+        målt at virke, når skrivebordet står foran Livline.
+
+        Forskellen på denne og vinduesvagten er afgørende. Vagten SÆTTER
+        tilstande, der allerede er sat — og compositoren ser derfor ingen
+        forskel og gør ingenting. Her fjernes vinduet først helt
+        (withdraw), og så bedes der om det igen (deiconify). Det udløser
+        en ny mapning, og det var netop dét, der bragte vinduet frem under
+        prøven 15.10.
+
+        -fullscreen sættes MED DET SAMME efter deiconify, ikke af vagten
+        fem sekunder senere. Ved prøven kom vinduet frem i lille størrelse
+        først, og kommer der en besked i det øjeblik, måler _spalte()
+        ombrydningsbredden på den lille bredde — og boblen bliver tegnet
+        forkert. Sjældent og kortvarigt, men unødvendigt.
+
+        update_idletasks() imellem: uden den kan Tk nå at slå de to
+        ændringer sammen til ingenting, og så er hele øvelsen spildt uden
+        at nogen opdager det.
+
+        Returnerer True, hvis det lykkedes. Fejler den, er vinduet lukket,
+        og så er der et større problem — men den skal SIGE det, ikke tie.
+        """
+        try:
+            self.root.withdraw()
+            self.root.update_idletasks()
+            self.root.deiconify()
+            self.root.attributes("-fullscreen", True)
+            self.root.attributes("-topmost", True)
+            self.root.lift()
+            if self.entry is not None:
+                self.entry.focus_set()
+            self._skjul_markoer()
+            # Spalten måles om, når vinduet har fundet sin størrelse.
+            # Samme to kald som efter et skift af brugerflade.
+            self.root.after_idle(self._juster_bredder)
+            self.root.after(400, self._juster_bredder)
+            log.info("Vinduet mappet om (%s)", grund)
+            return True
+        except tk.TclError as e:
+            log.warning("Kunne ikke mappe vinduet om (%s): %s", grund, e)
+            return False
 
     def _skjul_markoer(self, w=None) -> None:
         """Skjuler musemarkøren på ALLE flader.
@@ -3569,6 +3711,28 @@ class LivlineUI:
                         f"Sker det tit, er det netstedet, der skal ses på.")
                 except Exception as e:
                     log.warning("Kunne ikke melde netafbrydelse: %s", e)
+            # /genstart er bestilt fra Telegram. Mapningen SKAL ske her, i
+            # vinduestråden — bot-laget kører i sin egen tråd og må aldrig
+            # røre Tkinter.
+            #
+            # Kvitteringen er ikke pynt. Uden den ved administrator ikke,
+            # om kommandoen nåede frem til en maskine, han ikke kan se.
+            # Og netop når noget er galt med skærmen, er det den eneste
+            # oplysning, han har.
+            if self.bot.genmap_oensket:
+                self.bot.genmap_oensket = False
+                ok = self._genmap("/genstart")
+                try:
+                    self.bot.send_admin(
+                        f"✅ {self.config.machine_name}: vinduet er hentet "
+                        f"frem igen."
+                        if ok else
+                        f"❌ {self.config.machine_name}: vinduet kunne IKKE "
+                        f"hentes frem. Det betyder, at selve vinduet er "
+                        f"lukket, og at appen kører uden en skærm at vise "
+                        f"noget på. Kig i loggen: journalctl -t livline")
+                except Exception as e:
+                    log.warning("Kunne ikke kvittere for /genstart: %s", e)
         except Exception as e:
             log.warning("Fejl i beskedløkken: %s", e)
         finally:
